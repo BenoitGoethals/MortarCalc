@@ -1,0 +1,33 @@
+[project]
+name = "mortarcalc"
+version = "0.1.0"
+description = "81mm mortar fire-control calculator (waakrichting, fire missions, corrections)"
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6>=6.7",
+    "mgrs>=1.4.6",
+    "pyproj>=3.6",
+    "numpy>=2.0",
+    "pydantic>=2.7",
+    "packaging>=24",
+    'pyobjc-framework-CoreLocation>=10; sys_platform == "darwin"',
+]
+
+[project.scripts]
+mortarcalc = "mortarcalc.app:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mortarcalc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>MortarCalc — kaart</title>
+  <link rel="stylesheet" href="leaflet/leaflet.css" />
+  <style>
+    html, body, #map { height: 100%; margin: 0; padding: 0; background: #1e1e1e; }
+    .marker-label { color: #fff; font-weight: 600; text-shadow: 0 0 3px #000; }
+    .legend {
+      background: rgba(30,30,30,0.85); color: #eee; padding: 8px 10px;
+      font: 12px sans-serif; border-radius: 4px; line-height: 1.55;
+    }
+    .legend .row { display: flex; align-items: center; gap: 6px; }
+    .legend svg { flex: 0 0 auto; }
+    .leaflet-control-layers { font: 12px sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script src="leaflet/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([50.85, 4.35], 13);
+
+    // ---- base layers (online) ----
+    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '© OpenStreetMap'
+    });
+    const esri = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 19, attribution: 'Tiles © Esri' }
+    );
+    const opentopo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      maxZoom: 17, attribution: 'Map data: © OpenStreetMap, SRTM | © OpenTopoMap'
+    });
+    osm.addTo(map);
+    const baseLayers = {
+      'OpenStreetMap': osm,
+      'Satellite (Esri)': esri,
+      'OpenTopoMap': opentopo,
+    };
+    let mbtilesLayer = null;
+    const layerControl = L.control.layers(baseLayers, null, { position: 'topleft' }).addTo(map);
+
+    // ---- legend ----
+    const legend = L.control({position: 'topright'});
+    legend.onAdd = function() {
+      const div = L.DomUtil.create('div', 'legend');
+      div.innerHTML =
+        '<div class="row">' + mortarSvg('#e74c3c', 18) + '<span>Base piece</span></div>' +
+        '<div class="row">' + mortarSvg('#f39c12', 18) + '<span>Slave piece</span></div>' +
+        '<div class="row">' + apSvg(18) + '<span>Aiming point</span></div>' +
+        '<div class="row">' + foSvg(18) + '<span>FO / Observer</span></div>' +
+        '<div class="row">' + targetSvg('point', 18) + '<span>Target — point</span></div>' +
+        '<div class="row">' + targetSvg('linear', 18) + '<span>Target — linear</span></div>' +
+        '<div class="row">' + targetSvg('area', 18) + '<span>Target — area</span></div>';
+      return div;
+    };
+    legend.addTo(map);
+
+    // ---- MBTiles hook (called from Python) ----
+    window.mc_set_mbtiles = function(urlTemplate, metadata) {
+      if (mbtilesLayer) {
+        map.removeLayer(mbtilesLayer);
+        layerControl.removeLayer(mbtilesLayer);
+        mbtilesLayer = null;
+      }
+      if (urlTemplate) {
+        const meta = metadata || {};
+        const maxZoom = parseInt(meta.maxzoom || '20', 10);
+        const minZoom = parseInt(meta.minzoom || '0', 10);
+        const attribution = meta.attribution || 'MBTiles (offline)';
+        mbtilesLayer = L.tileLayer(urlTemplate, { maxZoom, minZoom, attribution });
+        layerControl.addBaseLayer(mbtilesLayer, 'MBTiles (offline)');
+        // Make MBTiles the active layer.
+        [osm, esri, opentopo].forEach(l => { if (map.hasLayer(l)) map.removeLayer(l); });
+        mbtilesLayer.addTo(map);
+      }
+    };
+
+    // ---- icons ----
+    function mortarSvg(color, size) {
+      return `<svg width="${size}" height="${size}" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+        <rect x="3" y="9" width="22" height="14" rx="1" fill="${color}" stroke="#fff" stroke-width="1.5"/>
+        <line x1="7" y1="22" x2="21" y2="6" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="7" cy="22" r="2.2" fill="#fff"/>
+      </svg>`;
+    }
+    function foSvg(size) {
+      return `<svg width="${size}" height="${size}" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2" y="8" width="24" height="13" rx="3" fill="#3498db" stroke="#fff" stroke-width="1.5"/>
+        <circle cx="9" cy="14.5" r="3.4" fill="none" stroke="#fff" stroke-width="1.6"/>
+        <circle cx="19" cy="14.5" r="3.4" fill="none" stroke="#fff" stroke-width="1.6"/>
+        <line x1="12.5" y1="14.5" x2="15.5" y2="14.5" stroke="#fff" stroke-width="1.6"/>
+      </svg>`;
+    }
+    function apSvg(size) {
+      return `<svg width="${size}" height="${size}" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="14,3 25,23 3,23" fill="#2ecc71" stroke="#fff" stroke-width="1.5"/>
+        <circle cx="14" cy="17" r="2" fill="#fff"/>
+      </svg>`;
+    }
+    function targetSvg(type, size) {
+      let body;
+      if (type === 'area') {
+        body = `<circle cx="14" cy="14" r="11" fill="rgba(155,89,182,0.30)" stroke="#9b59b6" stroke-width="2"/>`;
+      } else if (type === 'linear') {
+        body = `<rect x="2" y="11" width="24" height="6" fill="rgba(155,89,182,0.30)" stroke="#9b59b6" stroke-width="2"/>`;
+      } else {
+        body = `<circle cx="14" cy="14" r="10" fill="none" stroke="#9b59b6" stroke-width="2"/>`;
+      }
+      return `<svg width="${size}" height="${size}" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+        ${body}
+        <line x1="14" y1="2" x2="14" y2="26" stroke="#9b59b6" stroke-width="1.5"/>
+        <line x1="2" y1="14" x2="26" y2="14" stroke="#9b59b6" stroke-width="1.5"/>
+        <circle cx="14" cy="14" r="2.2" fill="#9b59b6"/>
+      </svg>`;
+    }
+
+    function divIcon(html, size) {
+      return L.divIcon({
+        className: 'mc-icon',
+        html: html,
+        iconSize: [size, size],
+        iconAnchor: [size/2, size/2],
+      });
+    }
+
+    let layer = L.layerGroup().addTo(map);
+
+    function render(payload) {
+      layer.clearLayers();
+      const all = [];
+
+      // pieces (mortar icon)
+      payload.pieces.forEach(p => {
+        const color = p.is_base ? '#e74c3c' : '#f39c12';
+        const m = L.marker([p.lat, p.lon], { icon: divIcon(mortarSvg(color, 30), 30) })
+          .bindTooltip(
+            `<b>${p.name}</b>${p.is_base ? ' (base)' : ''}<br>${p.mgrs}<br>` +
+            `${p.group ? 'Section ' + p.group : 'No section'}`,
+            { permanent: true, direction: 'right', className: 'marker-label', offset: [16, 0] }
+          );
+        layer.addLayer(m); all.push([p.lat, p.lon]);
+      });
+
+      // PDF arrows per piece
+      payload.pdf_arrows.forEach(a => {
+        const line = L.polyline([[a.from_lat, a.from_lon], [a.to_lat, a.to_lon]],
+          { color: '#f1c40f', weight: 2, dashArray: '4 3', opacity: 0.8 });
+        layer.addLayer(line);
+      });
+
+      // aiming points
+      payload.aiming_points.forEach(ap => {
+        const m = L.marker([ap.lat, ap.lon], { icon: divIcon(apSvg(22), 22) })
+          .bindTooltip(`RP ${ap.name}<br>${ap.mgrs}`,
+            { permanent: true, direction: 'right', className: 'marker-label', offset: [12, 0] });
+        layer.addLayer(m); all.push([ap.lat, ap.lon]);
+      });
+
+      // FOs (binocular icon)
+      payload.fos.forEach(fo => {
+        const m = L.marker([fo.lat, fo.lon], { icon: divIcon(foSvg(28), 28) })
+          .bindTooltip(`FO ${fo.call_sign}<br>${fo.mgrs}`,
+            { permanent: true, direction: 'right', className: 'marker-label', offset: [14, 0] });
+        layer.addLayer(m); all.push([fo.lat, fo.lon]);
+      });
+
+      // targets — render shape per target type
+      payload.targets.forEach(t => {
+        const type = (t.type || 'point').toLowerCase();
+        const label =
+          `Target ${t.fm_id} (${t.group})<br>` +
+          `<b>${type.toUpperCase()}</b>` +
+          (t.description ? ` — ${t.description}` : '') +
+          `<br>${t.mgrs}` +
+          (t.line ? `<br>line ${t.line.length_m.toFixed(0)} m @ ${t.line.azimuth_mils.toFixed(0)} mils` : '');
+
+        // shape underlay
+        if (type === 'linear' && t.line) {
+          const poly = L.polyline(
+            [[t.line.a_lat, t.line.a_lon], [t.line.b_lat, t.line.b_lon]],
+            { color: '#9b59b6', weight: 5, opacity: 0.85 }
+          );
+          layer.addLayer(poly);
+          all.push([t.line.a_lat, t.line.a_lon]);
+          all.push([t.line.b_lat, t.line.b_lon]);
+        } else if (type === 'area') {
+          const circ = L.circle([t.lat, t.lon], {
+            radius: 75,
+            color: '#9b59b6', weight: 2, opacity: 0.9,
+            fillColor: '#9b59b6', fillOpacity: 0.2,
+          });
+          layer.addLayer(circ);
+        }
+        // center icon for any target type
+        const m = L.marker([t.lat, t.lon], { icon: divIcon(targetSvg(type, 30), 30) })
+          .bindTooltip(label,
+            { permanent: true, direction: 'right', className: 'marker-label', offset: [16, 0] });
+        layer.addLayer(m); all.push([t.lat, t.lon]);
+      });
+
+      // GT-lines (per piece → target)
+      payload.gt_lines.forEach(l => {
+        const line = L.polyline([[l.from_lat, l.from_lon], [l.to_lat, l.to_lon]],
+          { color: '#e67e22', weight: 1.5, opacity: 0.7 });
+        layer.addLayer(line);
+      });
+
+      if (all.length > 0) {
+        map.fitBounds(L.latLngBounds(all).pad(0.2));
+      }
+    }
+
+    window.mc_render = function(jsonStr) {
+      try { render(JSON.parse(jsonStr)); }
+      catch (e) { console.error('render failed', e); }
+    };
+  </script>
+</body>
+</html>
