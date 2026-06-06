@@ -12,6 +12,7 @@ from ..ballistics import FireTable
 from ..battery import Peloton
 from ..persistence import save_state, load_state
 from ..state import StateRepository
+from .assets import app_icon
 from .section_panel import SectionPanel
 from .mission_panel import MissionPanel
 from .history_panel import HistoryPanel
@@ -32,6 +33,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.setWindowTitle("MortarCalc — 81 mm FDC")
+        self.setWindowIcon(app_icon())
         self.resize(1320, 820)
 
         self.peloton = peloton

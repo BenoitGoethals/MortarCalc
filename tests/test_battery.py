@@ -28,6 +28,38 @@ def test_unassigned_pieces():
     assert names == ["Y"]
 
 
+def test_each_section_has_own_base_piece():
+    """Het peloton mag meerdere basisstukken hebben — één per sectie."""
+    pel = Peloton()
+    pel.add_piece(Piece("A", mgrs_to_utm("31UDS1234567890", 80), is_base=True))
+    pel.add_piece(Piece("B", mgrs_to_utm("31UDS1235067900", 82)))
+    pel.add_piece(Piece("C", mgrs_to_utm("31UDS1240067850", 79), is_base=True))
+    pel.add_piece(Piece("D", mgrs_to_utm("31UDS1245067920", 81)))
+    pel.add_group(Group("Noord", pdf_mils=1600, member_names=["A", "B"]))
+    pel.add_group(Group("Zuid", pdf_mils=2400, member_names=["C", "D"]))
+
+    # Beide basisstukken blijven bestaan (geen globale exclusiviteit meer).
+    assert [p.name for p in pel.pieces if p.is_base] == ["A", "C"]
+    assert pel.base_of(pel.group("Noord")).name == "A"
+    assert pel.base_of(pel.group("Zuid")).name == "C"
+
+
+def test_single_base_per_section_enforced():
+    """Twee basisstukken in dezelfde sectie → de andere wordt gedegradeerd."""
+    pel = Peloton()
+    pel.add_piece(Piece("A", mgrs_to_utm("31UDS1234567890", 80), is_base=True))
+    pel.add_piece(Piece("B", mgrs_to_utm("31UDS1235067900", 82), is_base=True))
+    pel.add_group(Group("G", pdf_mils=0, member_names=["A"]))
+    pel.assign_piece_to_group("B", "G")  # B (ook basis) komt bij A in dezelfde sectie
+    assert pel.base_of(pel.group("G")).name == "B"
+    assert [p.name for p in pel.pieces if p.is_base] == ["B"]
+
+
+def test_section_without_base_returns_none(peloton_4x2):
+    # Zuid heeft in de fixture geen basisstuk.
+    assert peloton_4x2.base_of(peloton_4x2.group("Zuid")) is None
+
+
 def test_duplicate_piece_name_raises():
     pel = Peloton()
     pel.add_piece(Piece("A", mgrs_to_utm("31UDS1234567890")))

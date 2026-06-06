@@ -8,7 +8,9 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from .ballistics import load_firetable
 from .battery import Peloton
+from .gui.assets import app_icon
 from .gui.main_window import MainWindow
+from .gui.theme import apply_theme
 from .state import StateRepository
 
 
@@ -16,6 +18,8 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("MortarCalc")
     app.setOrganizationName("MortarCalc")
+    app.setWindowIcon(app_icon())
+    apply_theme(app)
 
     firetable_path = files("mortarcalc.data.firetables").joinpath("m821_81mm_he.json")
     firetable = load_firetable(str(firetable_path))

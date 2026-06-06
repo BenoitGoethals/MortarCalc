@@ -79,12 +79,9 @@ class ParallelSheaf(SheafSolver):
 
     @staticmethod
     def _guide_piece(peloton: Peloton, group: Group, pieces: list[Piece]) -> Piece:
-        try:
-            base = peloton.base()
-            if base.name in group.member_names:
-                return base
-        except ValueError:
-            pass
+        base = peloton.base_of(group)
+        if base is not None:
+            return base
         return pieces[0]
 
 

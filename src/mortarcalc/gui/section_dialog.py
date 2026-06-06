@@ -103,6 +103,7 @@ class EditSectionDialog(QDialog):
         footer.addWidget(b_del)
         footer.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.button(QDialogButtonBox.Close).setText("Save && Close")
         buttons.rejected.connect(self.accept)
         buttons.accepted.connect(self.accept)
         footer.addWidget(buttons)

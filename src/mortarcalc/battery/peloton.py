@@ -68,10 +68,22 @@ class Peloton:
 
     # ---------- stukken ----------
     def base(self) -> Piece:
+        """Eerste basisstuk van het peloton (zie ook `base_of` per sectie)."""
         for p in self.pieces:
             if p.is_base:
                 return p
         raise ValueError("Geen basisstuk gedefinieerd.")
+
+    def base_of(self, group: Group) -> Piece | None:
+        """Het basisstuk binnen één sectie, of None als die er nog geen heeft.
+
+        Elke sectie heeft een eigen basisstuk; over het peloton zijn dus
+        meerdere basisstukken toegestaan (hoogstens één per sectie).
+        """
+        for p in self.pieces:
+            if p.is_base and p.name in group.member_names:
+                return p
+        return None
 
     def piece(self, name: str) -> Piece:
         for p in self.pieces:
@@ -82,10 +94,8 @@ class Peloton:
     def add_piece(self, piece: Piece) -> None:
         if any(p.name == piece.name for p in self.pieces):
             raise ValueError(f"Stuk '{piece.name}' bestaat al.")
-        if piece.is_base:
-            self.pieces = [
-                Piece(name=p.name, position=p.position, is_base=False) for p in self.pieces
-            ]
+        # Een nieuw stuk zit nog in geen enkele sectie; basisstuk-exclusiviteit
+        # geldt per sectie en wordt afgedwongen bij toewijzing aan een sectie.
         self.pieces.append(piece)
 
     def remove_piece(self, name: str) -> None:
@@ -93,6 +103,38 @@ class Peloton:
         for g in self.groups:
             if name in g.member_names:
                 g.member_names.remove(name)
+
+    def update_piece(self, original_name: str, new_piece: Piece) -> None:
+        """Vervang een bestaand stuk in-place (Piece is frozen).
+
+        Behoudt groepslidmaatschap en munitievoorraad; migreert beide mee
+        wanneer het stuk hernoemd wordt. Bewaakt de basisstuk-exclusiviteit
+        binnen de sectie waar het stuk toe behoort.
+        """
+        idx = next((i for i, p in enumerate(self.pieces) if p.name == original_name), None)
+        if idx is None:
+            raise KeyError(original_name)
+        renamed = new_piece.name != original_name
+        if renamed and any(p.name == new_piece.name for p in self.pieces):
+            raise ValueError(f"Stuk '{new_piece.name}' bestaat al.")
+        self.pieces[idx] = new_piece
+        if renamed:
+            for g in self.groups:
+                g.member_names = [
+                    new_piece.name if n == original_name else n for n in g.member_names
+                ]
+            if original_name in self.ammo:
+                self.ammo[new_piece.name] = self.ammo.pop(original_name)
+        if new_piece.is_base:
+            group = self.group_of(new_piece.name)
+            if group is not None:
+                self._demote_bases_in_group(group, keep=new_piece.name)
+
+    def _demote_bases_in_group(self, group: Group, keep: str) -> None:
+        """Zorg dat alleen `keep` basisstuk is binnen deze sectie."""
+        for i, p in enumerate(self.pieces):
+            if p.name != keep and p.is_base and p.name in group.member_names:
+                self.pieces[i] = Piece(name=p.name, position=p.position, is_base=False)
 
     # ---------- groepen ----------
     def group(self, name: str) -> Group:
@@ -116,7 +158,10 @@ class Peloton:
         if not any(p.name == piece_name for p in self.pieces):
             raise KeyError(f"Stuk '{piece_name}' bestaat niet.")
         self._detach_piece(piece_name)
-        self.group(group_name).member_names.append(piece_name)
+        group = self.group(group_name)
+        group.member_names.append(piece_name)
+        if self.piece(piece_name).is_base:
+            self._demote_bases_in_group(group, keep=piece_name)
 
     def unassigned_pieces(self) -> list[Piece]:
         assigned: set[str] = {n for g in self.groups for n in g.member_names}

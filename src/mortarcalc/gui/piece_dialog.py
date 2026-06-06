@@ -53,19 +53,30 @@ class _CoordInputs:
 
 
 class AddPieceDialog(QDialog):
-    """Modal: add a single mortar piece with initial per-shell ammo.
+    """Modal: add or edit a single mortar piece with per-shell ammo.
 
-    After accept(): .result_piece is set and .result_ammo holds {shell: count}
-    for every shell with a non-zero initial stock.
+    Pass ``piece`` (and optionally ``ammo``) to open in edit mode, pre-filling
+    every field. After accept(): .result_piece is set and .result_ammo holds
+    {shell: count} for every shell.
     """
 
-    def __init__(self, peloton: Peloton, parent=None) -> None:
+    def __init__(
+        self,
+        peloton: Peloton,
+        parent=None,
+        *,
+        piece: Piece | None = None,
+        ammo: dict[str, int] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.peloton = peloton
         self.result_piece: Piece | None = None
         self.result_ammo: dict[str, int] = {}
+        # In edit mode this is the original name so the duplicate check can
+        # ignore the piece being edited (and the caller knows to update).
+        self.original_name: str | None = piece.name if piece is not None else None
 
-        self.setWindowTitle("Add piece")
+        self.setWindowTitle("Edit piece" if piece is not None else "Add piece")
         self.setModal(True)
         self.resize(440, 0)
 
@@ -83,8 +94,8 @@ class AddPieceDialog(QDialog):
         form.addRow("Role", self.role)
         root.addLayout(form)
 
-        # ---- per-shell initial stock ----
-        ammo_box = QGroupBox("Initial ammunition (per shell type)")
+        # ---- per-shell stock ----
+        ammo_box = QGroupBox("Ammunition (per shell type)")
         ammo_form = QFormLayout(ammo_box)
         self.ammo_spinners: dict[str, QSpinBox] = {}
         for shell in KNOWN_SHELLS:
@@ -100,7 +111,18 @@ class AddPieceDialog(QDialog):
         buttons.accepted.connect(self._on_ok)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+        if piece is not None:
+            self._prefill(piece, ammo or {})
         self.name.setFocus()
+
+    def _prefill(self, piece: Piece, ammo: dict[str, int]) -> None:
+        self.name.setText(piece.name)
+        self.coords.mgrs.setText(piece.position.to_mgrs())
+        self.coords.alt.setValue(piece.position.altitude_m)
+        self.role.setCurrentIndex(1 if piece.is_base else 0)
+        for shell, sb in self.ammo_spinners.items():
+            sb.setValue(int(ammo.get(shell, 0)))
 
     def _on_ok(self) -> None:
         name = self.name.text().strip() or f"#{len(self.peloton.pieces) + 1}"
@@ -109,7 +131,7 @@ class AddPieceDialog(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "MGRS error", str(e))
             return
-        if any(p.name == name for p in self.peloton.pieces):
+        if name != self.original_name and any(p.name == name for p in self.peloton.pieces):
             QMessageBox.warning(self, "Piece", f"Piece '{name}' already exists.")
             return
         self.result_piece = Piece(name=name, position=pos, is_base=(self.role.currentIndex() == 1))
