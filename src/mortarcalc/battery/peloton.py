@@ -52,6 +52,9 @@ class Group:
     member_names: list[str] = field(default_factory=list)
     left_limit_mils: float = 0.0
     right_limit_mils: float = 0.0
+    # Optional max range cap in metres. 0.0 = no override → use firing-table max.
+    # When set, range envelopes on the diagram and map are clipped to this value.
+    max_range_m: float = 0.0
 
     def set_pdf(self, pdf_mils: float) -> None:
         self.pdf_mils = pdf_mils % 6400.0
@@ -59,6 +62,12 @@ class Group:
     def set_limits(self, left_mils: float, right_mils: float) -> None:
         self.left_limit_mils = left_mils % 6400.0
         self.right_limit_mils = right_mils % 6400.0
+
+    def effective_max_m(self, firetable_max_m: float) -> float:
+        """Resolve the max range used for diagrams/map (group cap wins if set)."""
+        if self.max_range_m > 0.0:
+            return min(self.max_range_m, firetable_max_m)
+        return firetable_max_m
 
     def sector_width_mils(self) -> float:
         """Breedte van de vuursector (klok-mee, links→rechts), in mils.

@@ -7,12 +7,54 @@
   <style>
     html, body, #map { height: 100%; margin: 0; padding: 0; background: #1e1e1e; }
     .marker-label { color: #fff; font-weight: 600; text-shadow: 0 0 3px #000; }
+    .range-label {
+      color: #fff; font-weight: 700; font-size: 13px;
+      text-shadow: 0 0 4px #000, 0 0 4px #000;
+      background: rgba(0,0,0,0.55); padding: 2px 6px;
+      border-radius: 3px; white-space: nowrap;
+    }
+    .range-filter {
+      background: rgba(30,30,30,0.92); color: #eee;
+      padding: 10px 12px 12px; border-radius: 4px;
+      font: 12px sans-serif; min-width: 200px;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.65);
+    }
+    .range-filter .hdr {
+      color: #aaa; font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.5px; margin-bottom: 5px;
+    }
+    .range-filter select, .range-filter button {
+      background: #2a2a2a; color: #eee; border: 1px solid #555;
+      border-radius: 3px; padding: 3px 6px; width: 100%; font: 12px sans-serif;
+    }
+    .range-filter button { cursor: pointer; }
+    .range-filter button:hover { background: #3a3a3a; }
+    .range-filter .row { margin-top: 6px; }
+    .range-filter .row.label { color: #aaa; font-size: 11px; margin-bottom: 2px; }
+    .range-filter .shells { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
+    .range-filter .shells label {
+      display: flex; align-items: center; gap: 5px; cursor: pointer;
+      padding: 2px 4px; border-radius: 3px; font-weight: 600;
+    }
+    .range-filter .shells label:hover { background: rgba(255,255,255,0.06); }
+    .range-filter .shells input { accent-color: #1abc9c; }
+    .range-filter .quick {
+      display: flex; gap: 4px; margin-top: 4px;
+    }
+    .range-filter .quick button { padding: 2px 6px; font-size: 11px; }
+    .range-filter .empty { color: #888; font-style: italic; padding: 4px 2px; }
     .legend {
-      background: rgba(30,30,30,0.85); color: #eee; padding: 8px 10px;
-      font: 12px sans-serif; border-radius: 4px; line-height: 1.55;
+      background: rgba(30,30,30,0.88); color: #eee; padding: 9px 12px;
+      font: 13px sans-serif; border-radius: 4px; line-height: 1.6;
     }
     .legend .row { display: flex; align-items: center; gap: 6px; }
     .legend svg { flex: 0 0 auto; }
+    .legend .row.hdr {
+      color: #aaa; font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.5px; margin-top: 3px;
+    }
+    .legend .row.sep { border-top: 1px solid #444; height: 0; margin: 6px 0; }
+    .legend .dim { color: #888; font-size: 12px; }
     .leaflet-control-layers { font: 12px sans-serif; }
   </style>
 </head>
@@ -42,11 +84,118 @@
     let mbtilesLayer = null;
     const layerControl = L.control.layers(baseLayers, null, { position: 'topleft' }).addTo(map);
 
-    // Range sectors live in their own overlay so the user can toggle them.
-    const rangeLayer = L.layerGroup().addTo(map);
-    layerControl.addOverlay(rangeLayer, 'Range sectors');
+    // Range overlays — two toggleable layers in the layer control:
+    // 1) "Sector of fire (limits)" — the watch-sector wedge fills (uncoloured
+    //    pie shaded with the section colour; not shell-specific).
+    // 2) "Range envelopes" — the actual range arcs/wedges/rings/labels;
+    //    populated by the Range Filter control panel based on the user's
+    //    section + shell selection.
+    const sectorPies  = L.layerGroup().addTo(map);
+    const rangeLayer  = L.layerGroup().addTo(map);
+    layerControl.addOverlay(sectorPies, 'Sector of fire (limits)');
+    layerControl.addOverlay(rangeLayer, 'Range envelopes');
+
+    // -------- Range Filter control panel --------
+    // Holds the user's choice of section + shells; re-renders rangeLayer on
+    // every change without disturbing the map view.
+    const rangeFilter = { section: 'ALL', shells: new Set() };
+    let _lastPayload = null;
+    let _initialFit  = false;
+
+    const RangeFilterControl = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd: function() {
+        const div = L.DomUtil.create('div', 'range-filter');
+        div.innerHTML =
+          '<div class="hdr">Range filter</div>' +
+          '<div class="row label">Section</div>' +
+          '<div class="row"><select class="rf-section"></select></div>' +
+          '<div class="row label">Munition</div>' +
+          '<div class="shells rf-shells"></div>' +
+          '<div class="quick">'
+            + '<button class="rf-all">All</button>'
+            + '<button class="rf-none">None</button>'
+            + '<button class="rf-fit" title="Zoom to platoon">Fit platoon</button>'
+          + '</div>';
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.disableScrollPropagation(div);
+        return div;
+      }
+    });
+    const rfControl = new RangeFilterControl();
+    rfControl.addTo(map);
+
+    function rfRoot() { return rfControl.getContainer(); }
+
+    function populateFilterUI(payload) {
+      const root = rfRoot();
+      const sectSel = root.querySelector('.rf-section');
+      const sections = (payload.range_sectors || []).map(s => s.section);
+      const prevSect = rangeFilter.section;
+      sectSel.innerHTML =
+        '<option value="ALL">All sections</option>'
+        + sections.map(n => `<option value="${n}">${n}</option>`).join('');
+      sectSel.value = sections.includes(prevSect) || prevSect === 'ALL'
+        ? prevSect : 'ALL';
+      rangeFilter.section = sectSel.value;
+      sectSel.onchange = () => {
+        rangeFilter.section = sectSel.value;
+        applyRangeFilter();
+      };
+
+      const shellsBox = root.querySelector('.rf-shells');
+      const ammo = payload.ammo_legend || [];
+      if (ammo.length === 0) {
+        shellsBox.innerHTML = '<div class="empty">No firing tables loaded</div>';
+      } else {
+        shellsBox.innerHTML = ammo.map(a =>
+          `<label style="color:${a.color}">`
+          + `<input type="checkbox" data-shell="${a.shell}"`
+          + (rangeFilter.shells.has(a.shell) ? ' checked' : '') + '>'
+          + `${a.shell}</label>`
+        ).join('');
+        shellsBox.querySelectorAll('input').forEach(cb => {
+          cb.onchange = () => {
+            const s = cb.getAttribute('data-shell');
+            if (cb.checked) rangeFilter.shells.add(s);
+            else rangeFilter.shells.delete(s);
+            applyRangeFilter();
+          };
+        });
+      }
+
+      root.querySelector('.rf-all').onclick = () => {
+        rangeFilter.shells = new Set(ammo.map(a => a.shell));
+        populateFilterUI(_lastPayload); applyRangeFilter();
+      };
+      root.querySelector('.rf-none').onclick = () => {
+        rangeFilter.shells.clear();
+        populateFilterUI(_lastPayload); applyRangeFilter();
+      };
+      root.querySelector('.rf-fit').onclick = () => fitPlatoon();
+    }
+
+    function fitPlatoon() {
+      if (!_lastPayload) return;
+      const pts = [];
+      (_lastPayload.pieces || []).forEach(p => pts.push([p.lat, p.lon]));
+      (_lastPayload.aiming_points || []).forEach(p => pts.push([p.lat, p.lon]));
+      (_lastPayload.fos || []).forEach(p => pts.push([p.lat, p.lon]));
+      (_lastPayload.targets || []).forEach(t => pts.push([t.lat, t.lon]));
+      if (pts.length === 0) return;
+      if (pts.length === 1) {
+        map.setView(pts[0], 14);
+      } else {
+        map.fitBounds(L.latLngBounds(pts).pad(0.15));
+      }
+    }
 
     // ---- legend ----
+    function swatchSvg(color, size) {
+      return `<svg width="${size}" height="${size}" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">`
+        + `<circle cx="9" cy="9" r="7" fill="none" stroke="${color}" stroke-width="2"/>`
+        + `</svg>`;
+    }
     const legend = L.control({position: 'topright'});
     legend.onAdd = function() {
       const div = L.DomUtil.create('div', 'legend');
@@ -57,10 +206,29 @@
         '<div class="row">' + foSvg(18) + '<span>FO / Observer</span></div>' +
         '<div class="row">' + targetSvg('point', 18) + '<span>Target — point</span></div>' +
         '<div class="row">' + targetSvg('linear', 18) + '<span>Target — linear</span></div>' +
-        '<div class="row">' + targetSvg('area', 18) + '<span>Target — area</span></div>';
+        '<div class="row">' + targetSvg('area', 18) + '<span>Target — area</span></div>' +
+        '<div class="row sep" id="legend-ranges-sep"></div>' +
+        '<div id="legend-ranges"></div>';
       return div;
     };
     legend.addTo(map);
+
+    function renderRangeLegend(ammo) {
+      const sep = document.getElementById('legend-ranges-sep');
+      const box = document.getElementById('legend-ranges');
+      if (!sep || !box) return;
+      if (!ammo || !ammo.length) {
+        sep.style.display = 'none'; box.innerHTML = ''; return;
+      }
+      sep.style.display = 'block';
+      box.innerHTML = '<div class="row hdr">Range envelopes (per shell)</div>'
+        + ammo.map(a =>
+            '<div class="row">' + swatchSvg(a.color, 18)
+            + '<span>' + a.shell + '  '
+            + '<span class="dim">(' + a.min_m.toFixed(0) + '–' + a.max_m.toFixed(0) + ' m)</span>'
+            + '</span></div>'
+          ).join('');
+    }
 
     // ---- MBTiles hook (called from Python) ----
     window.mc_set_mbtiles = function(urlTemplate, metadata) {
@@ -133,39 +301,37 @@
     let layer = L.layerGroup().addTo(map);
 
     function render(payload) {
+      _lastPayload = payload;
       layer.clearLayers();
+      sectorPies.clearLayers();
       rangeLayer.clearLayers();
       const all = [];
 
-      // range sectors per section ("pies") — not in fitBounds
+      // refresh range legend + range-filter UI from the current ammo set
+      renderRangeLegend(payload.ammo_legend || []);
+      populateFilterUI(payload);
+
+      // Sector-of-fire fill + limit lines (no shell filter — these are about
+      // the watch sector, not a range envelope).
       (payload.range_sectors || []).forEach(s => {
-        // faint filled wedge = the section's sector of fire
+        const capTag = (s.max_range_m && s.max_range_m > 0)
+          ? `<br><i>capped at ${s.max_range_m.toFixed(0)} m</i>` : '';
         if (s.fill && s.fill.length > 2) {
-          rangeLayer.addLayer(L.polygon(s.fill, {
-            color: s.color, weight: 1, opacity: 0.6,
-            fillColor: s.color, fillOpacity: 0.10,
-          }).bindTooltip(`${s.section} — sector of fire`, { sticky: true }));
-        }
-        // per-ammunition arcs (max solid, min dashed)
-        (s.bands || []).forEach(b => {
-          rangeLayer.addLayer(L.polyline(b.max_arc, {
-            color: b.color, weight: 2, opacity: 0.9,
-          }).bindTooltip(`${s.section} · ${b.shell} max ${b.max_m.toFixed(0)} m`,
-            { sticky: true }));
-          if (b.min_arc) {
-            rangeLayer.addLayer(L.polyline(b.min_arc, {
-              color: b.color, weight: 1.5, opacity: 0.8, dashArray: '6 5',
-            }).bindTooltip(`${s.section} · ${b.shell} min ${b.min_m.toFixed(0)} m`,
-              { sticky: true }));
-          }
-        });
-        // left/right limit lines
-        (s.limit_lines || []).forEach(line => {
-          rangeLayer.addLayer(L.polyline(line, {
+          sectorPies.addLayer(L.polygon(s.fill, {
             color: s.color, weight: 2, opacity: 0.85,
+            fillColor: s.color, fillOpacity: 0.18,
+          }).bindTooltip(`${s.section} — sector of fire${capTag}`, { sticky: true }));
+        }
+        (s.limit_lines || []).forEach(line => {
+          sectorPies.addLayer(L.polyline(line, {
+            color: s.color, weight: 2.5, opacity: 0.9,
           }));
         });
       });
+
+      // Range envelopes (per-piece + per-section) are drawn through the
+      // filter so the user can pick exactly which section × shells to see.
+      applyRangeFilter();
 
       // pieces (mortar icon)
       payload.pieces.forEach(p => {
@@ -253,15 +419,98 @@
         layer.addLayer(line);
       });
 
-      if (all.length > 0) {
-        map.fitBounds(L.latLngBounds(all).pad(0.2));
+      // Only auto-zoom on the very first render — after that the user is in
+      // charge of the view (manual zoom isn't wiped on every refresh). The
+      // 'Fit platoon' button in the range-filter control re-centres on demand.
+      if (!_initialFit && all.length > 0) {
+        map.fitBounds(L.latLngBounds(all).pad(0.08));
+        _initialFit = true;
       }
+    }
+
+    function applyRangeFilter() {
+      if (!_lastPayload) return;
+      rangeLayer.clearLayers();
+      const sectionFilter = rangeFilter.section;   // 'ALL' or section name
+      const shellFilter   = rangeFilter.shells;    // set of shell names
+
+      if (shellFilter.size === 0) return;          // nothing to draw
+
+      // Per-piece range circles, filtered by section + shell
+      (_lastPayload.piece_ranges || []).forEach(p => {
+        if (sectionFilter !== 'ALL' && p.group !== sectionFilter) return;
+        p.bands.forEach(b => {
+          if (!shellFilter.has(b.shell)) return;
+          rangeLayer.addLayer(L.circle([p.lat, p.lon], {
+            radius: b.max_m,
+            color: b.color, weight: 1.4, opacity: 0.75,
+            fill: false,
+          }).bindTooltip(
+            `${p.name} · ${b.shell} max ${b.max_m.toFixed(0)} m`,
+            { sticky: true }
+          ));
+          if (b.min_m > 0) {
+            rangeLayer.addLayer(L.circle([p.lat, p.lon], {
+              radius: b.min_m,
+              color: b.color, weight: 1, opacity: 0.55,
+              fill: false, dashArray: '3 5',
+            }).bindTooltip(
+              `${p.name} · ${b.shell} min ${b.min_m.toFixed(0)} m`,
+              { sticky: true }
+            ));
+          }
+        });
+      });
+
+      // Per-section centroid arcs + filled wedges + max-range labels
+      (_lastPayload.range_sectors || []).forEach(s => {
+        if (sectionFilter !== 'ALL' && s.section !== sectionFilter) return;
+        const capTag = (s.max_range_m && s.max_range_m > 0)
+          ? `<br><i>capped at ${s.max_range_m.toFixed(0)} m</i>` : '';
+        (s.bands || []).forEach(b => {
+          if (!shellFilter.has(b.shell)) return;
+          if (b.wedge && b.wedge.length > 2) {
+            rangeLayer.addLayer(L.polygon(b.wedge, {
+              color: b.color, weight: 2, opacity: 0.9,
+              fillColor: b.color, fillOpacity: 0.16,
+            }).bindTooltip(
+              `${s.section} · ${b.shell} pie — max ${b.max_m.toFixed(0)} m${capTag}`,
+              { sticky: true }));
+          } else {
+            rangeLayer.addLayer(L.polyline(b.max_arc, {
+              color: b.color, weight: 2.4, opacity: 0.95,
+            }).bindTooltip(
+              `${s.section} · ${b.shell} max ${b.max_m.toFixed(0)} m${capTag}`,
+              { sticky: true }));
+          }
+          if (b.min_arc) {
+            rangeLayer.addLayer(L.polyline(b.min_arc, {
+              color: b.color, weight: 1.5, opacity: 0.8, dashArray: '6 5',
+            }).bindTooltip(
+              `${s.section} · ${b.shell} min ${b.min_m.toFixed(0)} m`,
+              { sticky: true }));
+          }
+          if (b.label_at) {
+            rangeLayer.addLayer(L.marker(b.label_at, {
+              icon: L.divIcon({
+                className: 'range-label',
+                html: `${b.shell} ${b.max_m.toFixed(0)} m`,
+                iconSize: null, iconAnchor: [0, 0],
+              }),
+              interactive: false,
+            }));
+          }
+        });
+      });
     }
 
     window.mc_render = function(jsonStr) {
       try { render(JSON.parse(jsonStr)); }
       catch (e) { console.error('render failed', e); }
     };
+    // Expose a hook so the Python side could programmatically refit
+    // (e.g. on tab switch) — not used yet, but cheap to add.
+    window.mc_fit_platoon = function() { _initialFit = false; fitPlatoon(); };
   </script>
 </body>
 </html>

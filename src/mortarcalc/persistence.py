@@ -194,6 +194,7 @@ def peloton_to_dict(pel: Peloton) -> dict[str, Any]:
                 "member_names": list(g.member_names),
                 "left_limit_mils": g.left_limit_mils,
                 "right_limit_mils": g.right_limit_mils,
+                "max_range_m": g.max_range_m,
             }
             for g in pel.groups
         ],
@@ -223,6 +224,7 @@ def peloton_from_dict(d: dict[str, Any]) -> Peloton:
             member_names=list(gd.get("member_names", [])),
             left_limit_mils=float(gd.get("left_limit_mils", 0.0)),
             right_limit_mils=float(gd.get("right_limit_mils", 0.0)),
+            max_range_m=float(gd.get("max_range_m", 0.0)),
         ))
     for ad in d.get("aiming_points", []):
         pel.add_aiming_point(AimingPoint(name=ad["name"], position=_pos_from_dict(ad)))

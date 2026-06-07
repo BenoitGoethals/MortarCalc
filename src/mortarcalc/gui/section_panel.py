@@ -16,6 +16,7 @@ from ..ballistics import FireTableLibrary
 from .position_diagram import BatteryDiagram
 from .piece_dialog import AddPieceDialog, AddAimingPointDialog, AddObserverDialog
 from .section_dialog import EditSectionDialog
+from .shell_selector import ShellSelector
 
 
 class SectionPanel(QWidget):
@@ -287,11 +288,15 @@ class SectionPanel(QWidget):
         self.groups_list.itemDoubleClicked.connect(self._open_group_dialog)
         wrap.addWidget(self.groups_list)
 
-        # Always-visible battery diagram + range-ring toggle
+        # Always-visible battery diagram + per-shell range selector
         self.battery_diagram = BatteryDiagram(self.peloton, library=self.library)
-        self.range_toggle = QCheckBox("Show range sectors (left/right limits × ammunition)")
-        self.range_toggle.toggled.connect(self.battery_diagram.set_show_ranges)
-        wrap.addWidget(self.range_toggle)
+        self.shell_selector = ShellSelector(
+            library=self.library, title="Show ranges:",
+        )
+        self.shell_selector.selection_changed.connect(
+            self.battery_diagram.set_visible_shells
+        )
+        wrap.addWidget(self.shell_selector)
         wrap.addWidget(self.battery_diagram, stretch=1)
         return box
 
@@ -360,10 +365,18 @@ class SectionPanel(QWidget):
 
         pdf_spin.valueChanged.connect(_sync_limits)
         _sync_limits(0)
+        max_range_spin = QDoubleSpinBox()
+        max_range_spin.setRange(0, 30000); max_range_spin.setSuffix(" m"); max_range_spin.setDecimals(0)
+        max_range_spin.setSpecialValueText("(use firing-table max)")
+        max_range_spin.setToolTip(
+            "Optional cap on the range envelopes shown on the diagram and map.\n"
+            "0 = no override; the firing-table maximum is used."
+        )
         form.addRow("Name", name_edit)
         form.addRow("Primary Direction of Fire", pdf_spin)
         form.addRow("Left limit", left_spin)
         form.addRow("Right limit", right_spin)
+        form.addRow("Max range", max_range_spin)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
@@ -380,6 +393,7 @@ class SectionPanel(QWidget):
                 name=name, pdf_mils=pdf_spin.value(),
                 left_limit_mils=left_spin.value(),
                 right_limit_mils=right_spin.value(),
+                max_range_m=max_range_spin.value(),
             ))
         except ValueError as e:
             QMessageBox.warning(self, "Section", str(e))
@@ -400,6 +414,7 @@ class SectionPanel(QWidget):
             peloton=self.peloton,
             group=group,
             on_changed=self._refresh_all,
+            library=self.library,
             parent=self,
         )
         dlg.exec()

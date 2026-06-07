@@ -214,7 +214,50 @@ class MapPanel(QWidget):
             "gt_lines": gt_lines,
             "ot_lines": ot_lines,
             "range_sectors": self._range_sectors(),
+            "piece_ranges": self._piece_ranges(),
+            "ammo_legend": self._ammo_legend(),
         }
+
+    # ---------- per-piece range rings ----------
+    def _ammo_legend(self) -> list[dict]:
+        """Color key used for both per-piece rings and per-section arcs."""
+        if not self.library:
+            return []
+        out = []
+        for i, shell in enumerate(self.library.shells()):
+            lo, hi = self.library.tables[shell].range_span_m
+            out.append({
+                "shell": shell,
+                "color": AMMO_COLORS[i % len(AMMO_COLORS)],
+                "min_m": lo, "max_m": hi,
+            })
+        return out
+
+    def _piece_ranges(self) -> list[dict]:
+        """For each piece, per-shell max/min range so each gun's envelope is
+        immediately visible from its own position. The piece's section caps
+        the maximum range if a `max_range_m` is set on that section."""
+        if not self.library or not self.peloton.pieces:
+            return []
+        bands = self._ammo_legend()
+        out = []
+        for p in self.peloton.pieces:
+            lat, lon = _latlon(p.position)
+            g = self.peloton.group_of(p.name)
+            cap = g.max_range_m if g is not None else 0.0
+            out.append({
+                "name": p.name,
+                "lat": lat, "lon": lon,
+                "is_base": p.is_base,
+                "group": g.name if g is not None else None,
+                "bands": [
+                    {"shell": b["shell"], "color": b["color"],
+                     "min_m": b["min_m"],
+                     "max_m": min(b["max_m"], cap) if cap > 0 else b["max_m"]}
+                    for b in bands
+                ],
+            })
+        return out
 
     # ---------- range sectors ("pies") ----------
     def _centroid_pos(self, names) -> Position | None:
@@ -249,6 +292,8 @@ class MapPanel(QWidget):
         for i, shell in enumerate(self.library.shells()):
             lo, hi = self.library.tables[shell].range_span_m
             bands_def.append((shell, lo, hi, AMMO_COLORS[i % len(AMMO_COLORS)]))
+        if not bands_def:
+            return []
         overall_max = max(hi for _, _, hi, _ in bands_def)
 
         sections = [g for g in self.peloton.groups if self._centroid_pos(g.member_names)]
@@ -270,24 +315,48 @@ class MapPanel(QWidget):
         left = group.left_limit_mils
         sweep = group.sector_width_mils()
         limited = group.has_limits()
+        # Section's max-range cap overrides any larger band.
+        cap = group.max_range_m
+        capped_bands = [
+            (shell, lo, min(hi, cap) if cap > 0 else hi, color)
+            for shell, lo, hi, color in bands_def
+        ]
+        capped_overall_max = min(overall_max, cap) if cap > 0 else overall_max
         entry: dict = {
             "section": group.name,
             "color": SECTION_COLORS[gi % len(SECTION_COLORS)],
             "limited": limited,
             "center": [clat, clon],
             "bands": [], "fill": [], "limit_lines": [],
+            "max_range_m": cap if cap > 0 else None,
         }
-        for shell, lo, hi, color in bands_def:
+        for shell, lo, hi, color in capped_bands:
             band = {"shell": shell, "color": color,
                     "max_m": hi, "min_m": lo,
                     "max_arc": self._arc_latlon(center, hi, left, sweep)}
+            # Per-shell wedge ("pie") for this section — gives the user filled
+            # wedges per shell that respect the sector limits, not just open arcs.
+            if limited:
+                band["wedge"] = (
+                    [[clat, clon]]
+                    + self._arc_latlon(center, hi, left, sweep)
+                    + [[clat, clon]]
+                )
             if lo > 0:
                 band["min_arc"] = self._arc_latlon(center, lo, left, sweep)
+            # Mid-azimuth point at the max-range arc — for a permanent label.
+            mid = (left + sweep / 2.0) % 6400.0
+            mlat, mlon = _latlon(offset(center, mid, hi))
+            band["label_at"] = [mlat, mlon]
             entry["bands"].append(band)
         if limited:
-            entry["fill"] = [[clat, clon]] + self._arc_latlon(center, overall_max, left, sweep) + [[clat, clon]]
+            entry["fill"] = (
+                [[clat, clon]]
+                + self._arc_latlon(center, capped_overall_max, left, sweep)
+                + [[clat, clon]]
+            )
             for az in (left, (left + sweep) % 6400.0):
-                elat, elon = _latlon(offset(center, az, overall_max))
+                elat, elon = _latlon(offset(center, az, capped_overall_max))
                 entry["limit_lines"].append([[clat, clon], [elat, elon]])
         return entry
 

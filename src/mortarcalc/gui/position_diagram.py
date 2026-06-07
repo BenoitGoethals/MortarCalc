@@ -31,19 +31,50 @@ def ammo_color(index: int) -> QColor:
 
 
 class SectionDiagram(QWidget):
-    """Plan-view diagram: gun positions (dots) + PDF direction (red arrows)."""
+    """Plan-view diagram of one section: pieces, PDF, optional range arcs.
+
+    `visible_shells` controls which munition envelopes are drawn:
+      * None  → no range arcs (default)
+      * set() → no range arcs
+      * a populated set → only those shells (case-insensitive match against
+        ``library.shells()``)
+    """
 
     _PAD       = 32    # pixels of padding around the plot area
     _GUN_R     = 7     # gun circle radius in px
     _ARROW_LEN = 54    # PDF arrow length in px
 
-    def __init__(self, peloton: Peloton, group: Group, parent=None) -> None:
+    def __init__(self, peloton: Peloton, group: Group,
+                 library: FireTableLibrary | None = None,
+                 parent=None) -> None:
         super().__init__(parent)
         self.peloton = peloton
         self.group   = group
-        self.setMinimumSize(180, 180)
-        self.setMaximumHeight(210)
+        self.library = library
+        self.visible_shells: set[str] | None = None
+        self.setMinimumSize(180, 220)
+        self.setMaximumHeight(260)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_visible_shells(self, shells: set[str] | None) -> None:
+        """Set which range envelopes are drawn (None / empty = none)."""
+        self.visible_shells = (
+            None if shells is None else {s.upper() for s in shells}
+        )
+        self.update()
+
+    def _rings(self) -> list[tuple[str, float, float, QColor]]:
+        if not self.library or self.visible_shells is None or not self.visible_shells:
+            return []
+        out: list[tuple[str, float, float, QColor]] = []
+        for i, shell in enumerate(self.library.shells()):
+            if shell.upper() not in self.visible_shells:
+                continue
+            lo, hi = self.library.tables[shell].range_span_m
+            # Section's max-range cap, if any
+            hi = self.group.effective_max_m(hi)
+            out.append((shell, lo, hi, ammo_color(i)))
+        return out
 
     # ------------------------------------------------------------------ paint
     def paintEvent(self, event) -> None:  # type: ignore[override]
@@ -71,6 +102,11 @@ class SectionDiagram(QWidget):
             (max(ns) - min(ns)) if len(pieces) > 1 else 0.0,
             50.0,
         )
+        # Range rings expand the view so the largest selected max fits.
+        rings = self._rings()
+        if rings:
+            max_r = max(hi for _, _, hi, _ in rings)
+            span = max(span, 2.0 * max_r * 1.08)
         usable = min(w, h) - 2.0 * self._PAD
         scale  = usable / span
         cx, cy = w / 2.0, h / 2.0
@@ -78,6 +114,10 @@ class SectionDiagram(QWidget):
         def sc(e: float, n: float) -> QPointF:
             return QPointF(cx + (e - ce) * scale,
                            cy - (n - cn) * scale)   # north = up
+
+        # ---- range arcs/rings per ammunition (drawn behind everything) ----
+        if rings:
+            self._draw_section_ranges(p, sc, scale, rings)
 
         # ---- PDF arrows (drawn behind guns) ----
         rad  = self.group.pdf_mils * 2.0 * math.pi / 6400.0
@@ -132,11 +172,89 @@ class SectionDiagram(QWidget):
         p.drawText(QRectF(4, h - 28, 60, 12), Qt.AlignLeft, "● basisstuk")
         p.setPen(_BLUE)
         p.drawText(QRectF(4, h - 16, 60, 12), Qt.AlignLeft, "● stuk")
+        # range legend top-left when rings are on — larger font, plus a
+        # `(capped)` marker when the group's max_range_m is in effect.
+        if rings:
+            font.setPointSize(10); font.setBold(True); p.setFont(font)
+            cap = self.group.max_range_m
+            for i, (shell, lo, hi, color) in enumerate(rings):
+                p.setPen(color)
+                tag = "  (capped)" if cap > 0 and hi <= cap + 0.5 else ""
+                p.drawText(QPointF(6, 18 + i * 16),
+                           f"● {shell}  {lo:.0f}–{hi:.0f} m{tag}")
+            font.setBold(False); p.setFont(font)
 
     # ------------------------------------------------------------------ helpers
+    def _draw_section_ranges(self, p: QPainter, sc, scale: float,
+                             rings: list[tuple[str, float, float, QColor]]) -> None:
+        """Range arcs centered on this section's centroid, clipped to the
+        section's sector of fire if limits are set."""
+        pts = [pc.position for pc in self.peloton.pieces
+               if pc.name in self.group.member_names]
+        if not pts:
+            return
+        c_e = sum(q.easting  for q in pts) / len(pts)
+        c_n = sum(q.northing for q in pts) / len(pts)
+        center = sc(c_e, c_n)
+
+        limited = self.group.has_limits()
+        left = self.group.left_limit_mils
+        sweep = self.group.sector_width_mils()
+        overall_max = max(hi for _, _, hi, _ in rings)
+
+        if limited:
+            # faint filled wedge for sector of fire
+            outer = BatteryDiagram._arc_points(center, overall_max * scale, left, sweep)
+            path = QPainterPath(center)
+            for pt in outer:
+                path.lineTo(pt)
+            path.lineTo(center)
+            fill = QColor("#f39c12"); fill.setAlpha(22)
+            p.setPen(Qt.NoPen); p.setBrush(fill); p.drawPath(path)
+
+        p.setBrush(Qt.NoBrush)
+        font = p.font(); font.setPointSize(9); font.setBold(True); p.setFont(font)
+        for shell, lo, hi, color in rings:
+            if limited:
+                p.setPen(QPen(color, 1.8))
+                p.drawPolyline(BatteryDiagram._arc_points(center, hi * scale, left, sweep))
+                if lo > 0:
+                    pen = QPen(color, 1.0); pen.setStyle(Qt.DashLine); p.setPen(pen)
+                    p.drawPolyline(BatteryDiagram._arc_points(center, lo * scale, left, sweep))
+                # max-range label at the centre azimuth of the sector
+                self._label_at_azimuth(
+                    p, center, hi * scale,
+                    (left + sweep / 2.0) % 6400.0,
+                    f"{shell} {hi:.0f} m", color,
+                )
+            else:
+                p.setPen(QPen(color, 1.8))
+                p.drawEllipse(center, hi * scale, hi * scale)
+                if lo > 0:
+                    pen = QPen(color, 1.0); pen.setStyle(Qt.DashLine); p.setPen(pen)
+                    p.drawEllipse(center, lo * scale, lo * scale)
+                # max-range label at the section's PDF azimuth
+                self._label_at_azimuth(
+                    p, center, hi * scale, self.group.pdf_mils,
+                    f"{shell} {hi:.0f} m", color,
+                )
+        font.setBold(False); p.setFont(font)
+
+    @staticmethod
+    def _label_at_azimuth(p: QPainter, center: QPointF, radius_px: float,
+                          azimuth_mils: float, text: str, color: QColor) -> None:
+        rad = azimuth_mils * 2.0 * math.pi / 6400.0
+        x = center.x() + radius_px * math.sin(rad)
+        y = center.y() - radius_px * math.cos(rad)
+        # nudge slightly outward
+        nx = math.sin(rad); ny = -math.cos(rad)
+        x += nx * 4; y += ny * 4
+        p.setPen(color)
+        p.drawText(QPointF(x - 14, y - 2), text)
+
     @staticmethod
     def _scale_bar(p: QPainter, scale: float, h: float) -> None:
-        for metres in (500, 200, 100, 50, 20, 10):
+        for metres in (3000, 2000, 1000, 500, 200, 100, 50, 20, 10):
             px = metres * scale
             if px >= 24:
                 break
@@ -185,7 +303,8 @@ class BatteryDiagram(QWidget):
         self.peloton = peloton
         self.library = library
         self.highlight_group: str | None = None
-        self.show_ranges: bool = False
+        # None / empty = no rings; otherwise only the named shells.
+        self.visible_shells: set[str] | None = None
         self.setMinimumHeight(220)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -193,17 +312,34 @@ class BatteryDiagram(QWidget):
         self.highlight_group = group_name
         self.update()
 
-    def set_show_ranges(self, flag: bool) -> None:
-        """Toggle min/max range rings per ammunition (rescales to fit them)."""
-        self.show_ranges = bool(flag)
+    def set_visible_shells(self, shells: set[str] | None) -> None:
+        """Pick which shells contribute range envelopes (None / empty = none)."""
+        self.visible_shells = (
+            None if shells is None else {s.upper() for s in shells}
+        )
         self.update()
 
+    def set_show_ranges(self, flag: bool) -> None:
+        """Convenience: show all shells (True) or none (False)."""
+        if flag and self.library:
+            self.set_visible_shells({s.upper() for s in self.library.shells()})
+        else:
+            self.set_visible_shells(None)
+
     def _rings(self) -> list[tuple[str, float, float, QColor]]:
-        """(shell, min_m, max_m, colour) per ammunition, or [] when disabled."""
-        if not self.show_ranges or not self.library:
+        """(shell, min_m, max_m, colour) per selected ammunition.
+
+        The hi value is the absolute firing-table max; per-section caps are
+        applied inside ``_draw_sector`` (each section can override).
+        """
+        if (not self.library
+                or self.visible_shells is None
+                or not self.visible_shells):
             return []
         out: list[tuple[str, float, float, QColor]] = []
         for i, shell in enumerate(self.library.shells()):
+            if shell.upper() not in self.visible_shells:
+                continue
             lo, hi = self.library.tables[shell].range_span_m
             out.append((shell, lo, hi, ammo_color(i)))
         return out
@@ -347,59 +483,86 @@ class BatteryDiagram(QWidget):
     def _draw_sector(cls, p: QPainter, center: QPointF, scale: float,
                      rings: list[tuple[str, float, float, QColor]],
                      group: Group, sec_color: QColor) -> None:
+        # Apply this group's max-range cap (if any) to the ring set.
+        capped = [
+            (shell, lo, group.effective_max_m(hi), color)
+            for shell, lo, hi, color in rings
+        ]
         if not group.has_limits():
-            cls._draw_full_rings(p, center, scale, rings)
+            cls._draw_full_rings(p, center, scale, capped, group)
             return
         left = group.left_limit_mils
         sweep = group.sector_width_mils()
-        overall_max = max(hi for _, _, hi, _ in rings)
+        overall_max = max(hi for _, _, hi, _ in capped)
 
-        # faint filled wedge = the sector of fire
+        # Strong filled wedge = the sector of fire (the "pie")
         outer = cls._arc_points(center, overall_max * scale, left, sweep)
         path = QPainterPath(center)
         for pt in outer:
             path.lineTo(pt)
         path.lineTo(center)
-        fill = QColor(sec_color); fill.setAlpha(26)
+        fill = QColor(sec_color); fill.setAlpha(55)
         p.setPen(Qt.NoPen); p.setBrush(fill); p.drawPath(path)
 
         # ammo arcs: max solid, min dashed — only across the sector
         p.setBrush(Qt.NoBrush)
-        for shell, lo, hi, color in rings:
-            p.setPen(QPen(color, 1.5))
+        font = p.font(); font.setPointSize(9); font.setBold(True); p.setFont(font)
+        for shell, lo, hi, color in capped:
+            p.setPen(QPen(color, 1.8))
             p.drawPolyline(cls._arc_points(center, hi * scale, left, sweep))
             if lo > 0:
                 pen = QPen(color, 1.0); pen.setStyle(Qt.DashLine); p.setPen(pen)
                 p.drawPolyline(cls._arc_points(center, lo * scale, left, sweep))
+            # max-range label at the sector's mid-azimuth
+            mid = (left + sweep / 2.0) % 6400.0
+            cls._label_arc(p, center, hi * scale, mid, f"{shell} {hi:.0f} m", color)
 
-        # left / right limit lines
-        p.setPen(QPen(sec_color, 2))
-        font = p.font(); font.setPointSize(7); p.setFont(font)
+        # left / right limit lines + bigger L/R labels
+        font.setPointSize(11); font.setBold(True); p.setFont(font)
         for a, lab in ((left, "L"), ((left + sweep) % 6400.0, "R")):
             rad = a * 2.0 * math.pi / 6400.0
             end = QPointF(center.x() + overall_max * scale * math.sin(rad),
                           center.y() - overall_max * scale * math.cos(rad))
             p.setPen(QPen(sec_color, 2)); p.drawLine(center, end)
             p.setPen(sec_color); p.drawText(end, lab)
+        font.setBold(False); p.setFont(font)
 
-    @staticmethod
-    def _draw_full_rings(p: QPainter, center: QPointF, scale: float,
-                         rings: list[tuple[str, float, float, QColor]]) -> None:
+    @classmethod
+    def _draw_full_rings(cls, p: QPainter, center: QPointF, scale: float,
+                         rings: list[tuple[str, float, float, QColor]],
+                         group: Group | None = None) -> None:
         """Concentric min (dashed) / max (solid) full circles per ammunition."""
         p.setBrush(Qt.NoBrush)
+        font = p.font(); font.setPointSize(9); font.setBold(True); p.setFont(font)
+        pdf_mils = group.pdf_mils if group is not None else 0.0
         for shell, lo, hi, color in rings:
-            p.setPen(QPen(color, 1.5))
+            p.setPen(QPen(color, 1.8))
             p.drawEllipse(center, hi * scale, hi * scale)
             if lo > 0:
                 pen = QPen(color, 1.0); pen.setStyle(Qt.DashLine); p.setPen(pen)
                 p.drawEllipse(center, lo * scale, lo * scale)
+            cls._label_arc(p, center, hi * scale, pdf_mils,
+                           f"{shell} {hi:.0f} m", color)
+        font.setBold(False); p.setFont(font)
+
+    @staticmethod
+    def _label_arc(p: QPainter, center: QPointF, radius_px: float,
+                   azimuth_mils: float, text: str, color: QColor) -> None:
+        rad = azimuth_mils * 2.0 * math.pi / 6400.0
+        x = center.x() + radius_px * math.sin(rad)
+        y = center.y() - radius_px * math.cos(rad)
+        nx, ny = math.sin(rad), -math.cos(rad)
+        x += nx * 5; y += ny * 5
+        p.setPen(color)
+        p.drawText(QPointF(x - 16, y - 2), text)
 
     @staticmethod
     def _ammo_legend(p: QPainter, rings: list[tuple[str, float, float, QColor]]) -> None:
-        font = p.font(); font.setPointSize(7); p.setFont(font)
+        font = p.font(); font.setPointSize(10); font.setBold(True); p.setFont(font)
         for i, (shell, lo, hi, color) in enumerate(rings):
             p.setPen(color)
-            p.drawText(QPointF(6, 14 + i * 12), f"● {shell}  {lo:.0f}–{hi:.0f} m")
+            p.drawText(QPointF(6, 18 + i * 16), f"● {shell}  {lo:.0f}–{hi:.0f} m")
+        font.setBold(False); p.setFont(font)
 
     @staticmethod
     def _scale_bar(p: QPainter, scale: float, h: float) -> None:

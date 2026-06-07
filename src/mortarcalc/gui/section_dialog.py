@@ -11,8 +11,10 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
 )
 
+from ..ballistics import FireTableLibrary
 from ..battery import Peloton, Group, lay_on_watch
 from .position_diagram import SectionDiagram
+from .shell_selector import ShellSelector
 
 
 class EditSectionDialog(QDialog):
@@ -23,12 +25,14 @@ class EditSectionDialog(QDialog):
         peloton: Peloton,
         group: Group,
         on_changed: Callable[[], None],
+        library: FireTableLibrary | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.peloton = peloton
         self.group = group
         self.on_changed = on_changed
+        self.library = library
         self.deleted: bool = False
 
         self.setWindowTitle(f"Section '{group.name}'")
@@ -62,8 +66,18 @@ class EditSectionDialog(QDialog):
         self.right_spin.setRange(0, 6399); self.right_spin.setDecimals(0)
         self.right_spin.setSuffix(" mils"); self.right_spin.setValue(group.right_limit_mils)
         self.right_spin.valueChanged.connect(self._on_limits_changed)
+        self.max_range_spin = QDoubleSpinBox()
+        self.max_range_spin.setRange(0, 30000); self.max_range_spin.setDecimals(0)
+        self.max_range_spin.setSuffix(" m"); self.max_range_spin.setValue(group.max_range_m)
+        self.max_range_spin.setSpecialValueText("(use firing-table max)")
+        self.max_range_spin.setToolTip(
+            "Optional cap on the range envelopes shown on the diagram and map.\n"
+            "0 = no override; the firing-table maximum is used."
+        )
+        self.max_range_spin.valueChanged.connect(self._on_max_range_changed)
         pdf_form.addRow("Left limit", self.left_spin)
         pdf_form.addRow("Right limit", self.right_spin)
+        pdf_form.addRow("Max range", self.max_range_spin)
         hint = QLabel("Sector runs clockwise from left to right limit. "
                       "Equal limits = unrestricted.")
         hint.setWordWrap(True)
@@ -71,8 +85,17 @@ class EditSectionDialog(QDialog):
         pdf_form.addRow("", hint)
         root.addWidget(pdf_box)
 
-        # ---- live diagram for this section ----
-        self.diagram = SectionDiagram(self.peloton, self.group, parent=self)
+        # ---- per-shell range selector + live diagram for this section ----
+        self.diagram = SectionDiagram(
+            self.peloton, self.group, library=self.library, parent=self
+        )
+        self.shell_selector = ShellSelector(
+            library=self.library, title="Show ranges:",
+        )
+        self.shell_selector.selection_changed.connect(
+            self.diagram.set_visible_shells
+        )
+        root.addWidget(self.shell_selector)
         root.addWidget(self.diagram)
 
         # ---- members ----
@@ -133,6 +156,11 @@ class EditSectionDialog(QDialog):
 
     def _on_limits_changed(self, _val: float = 0.0) -> None:
         self.group.set_limits(self.left_spin.value(), self.right_spin.value())
+        self.diagram.update()
+        self.on_changed()
+
+    def _on_max_range_changed(self, val: float) -> None:
+        self.group.max_range_m = float(val)
         self.diagram.update()
         self.on_changed()
 
