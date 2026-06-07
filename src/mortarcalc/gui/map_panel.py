@@ -211,12 +211,64 @@ class MapPanel(QWidget):
             "aiming_points": aps,
             "fos": fos,
             "targets": targets,
+            "planned_targets": self._planned_targets(),
             "gt_lines": gt_lines,
             "ot_lines": ot_lines,
             "range_sectors": self._range_sectors(),
             "piece_ranges": self._piece_ranges(),
             "ammo_legend": self._ammo_legend(),
         }
+
+    # ---------- planned (preplotted) targets ----------
+    def _planned_targets(self) -> list[dict]:
+        """Fire-plan targets shown as ghost markers on the map.
+
+        Visually separated from live-mission targets: hollow style, FPF in red,
+        and includes scheduled time so the FDC can plan H-hour coverage.
+        """
+        out = []
+        for t in self.peloton.fire_plan:
+            lat, lon = _latlon(t.position)
+            entry: dict = {
+                "name": t.name,
+                "lat": lat, "lon": lon,
+                "mgrs": t.position.to_mgrs(),
+                "type": t.target_type,
+                "sheaf": t.sheaf,
+                "shell": t.shell,
+                "fuze": t.fuze,
+                "rounds": t.rounds_per_piece,
+                "description": t.description,
+                "is_fpf": bool(t.is_fpf),
+                "suggested_group": t.suggested_group or None,
+                "timing": t.offset_label(),
+                "duration_min": t.duration_min,
+            }
+            sched = t.scheduled_start(self.peloton.h_hour)
+            entry["scheduled"] = (
+                sched.astimezone().strftime("%H:%M:%S") if sched else None
+            )
+            # Linear targets / sheafs get two endpoints for a polyline
+            from ..firemission.mission import TargetType as _TT, Sheaf as _Sh
+            is_linear = (
+                t.target_type == _TT.LINEAR.value
+                or t.sheaf == _Sh.LINEAR.value
+            )
+            if is_linear and t.line_length_m > 0:
+                half = t.line_length_m / 2.0
+                az = t.line_azimuth_mils
+                end_a = offset(t.position, az, half)
+                end_b = offset(t.position, (az + 3200.0) % 6400.0, half)
+                a_lat, a_lon = _latlon(end_a)
+                b_lat, b_lon = _latlon(end_b)
+                entry["line"] = {
+                    "a_lat": a_lat, "a_lon": a_lon,
+                    "b_lat": b_lat, "b_lon": b_lon,
+                    "length_m": t.line_length_m,
+                    "azimuth_mils": t.line_azimuth_mils,
+                }
+            out.append(entry)
+        return out
 
     # ---------- per-piece range rings ----------
     def _ammo_legend(self) -> list[dict]:
