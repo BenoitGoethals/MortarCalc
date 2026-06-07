@@ -8,12 +8,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..battery import (
-    Peloton, Piece, AimingPoint,
+    Peloton, Piece, AimingPoint, Observer,
     KNOWN_SHELLS, DEFAULT_INITIAL_STOCK, shell_label,
 )
 from ..geo import mgrs_to_utm, Position
 from ..geo.current_location import get_current_position, LocationUnavailable
 from .coord_dialog import prompt_position
+from .mgrs_field import MgrsLineEdit
 
 
 def _acquire_position(parent) -> Position | None:
@@ -34,7 +35,7 @@ class _CoordInputs:
 
     def __init__(self, parent: QDialog) -> None:
         self.parent = parent
-        self.mgrs = QLineEdit(); self.mgrs.setPlaceholderText("MGRS"); self.mgrs.setMinimumWidth(220)
+        self.mgrs = MgrsLineEdit(); self.mgrs.setMinimumWidth(220)
         self.alt = QDoubleSpinBox(); self.alt.setRange(-500, 9000); self.alt.setSuffix(" m")
         self.btn_loc = QPushButton("Current location")
         self.btn_loc.clicked.connect(self._fill_from_location)
@@ -181,4 +182,59 @@ class AddAimingPointDialog(QDialog):
             QMessageBox.warning(self, "Aiming point", f"Aiming point '{name}' already exists.")
             return
         self.result_ap = AimingPoint(name=name, position=pos)
+        self.accept()
+
+
+class AddObserverDialog(QDialog):
+    """Modal: add or edit a Forward Observer (call sign + position).
+
+    Pass ``observer`` to open in edit mode. After accept(): .result_observer
+    holds the new Observer.
+    """
+
+    def __init__(self, peloton: Peloton, parent=None, *, observer: Observer | None = None) -> None:
+        super().__init__(parent)
+        self.peloton = peloton
+        self.result_observer: Observer | None = None
+        self.original_call_sign: str | None = observer.call_sign if observer else None
+
+        self.setWindowTitle("Edit FO" if observer else "Add FO")
+        self.setModal(True)
+
+        form = QFormLayout(self)
+        self.call_sign = QLineEdit()
+        self.call_sign.setPlaceholderText("call sign, e.g. OP1")
+        self.call_sign.setMinimumWidth(220)
+        self.coords = _CoordInputs(self)
+        form.addRow("Call sign", self.call_sign)
+        form.addRow("MGRS", self.coords.mgrs_row)
+        form.addRow("Altitude", self.coords.alt)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._on_ok)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+        if observer is not None:
+            self.call_sign.setText(observer.call_sign)
+            self.coords.mgrs.setText(observer.position.to_mgrs())
+            self.coords.alt.setValue(observer.position.altitude_m)
+        self.call_sign.setFocus()
+
+    def _on_ok(self) -> None:
+        call_sign = self.call_sign.text().strip()
+        if not call_sign:
+            QMessageBox.information(self, "Call sign", "Provide a call sign for the FO.")
+            return
+        try:
+            pos = mgrs_to_utm(self.coords.mgrs.text().strip(), altitude_m=self.coords.alt.value())
+        except Exception as e:
+            QMessageBox.warning(self, "MGRS error", str(e))
+            return
+        if call_sign != self.original_call_sign and any(
+            o.call_sign == call_sign for o in self.peloton.observers
+        ):
+            QMessageBox.warning(self, "FO", f"FO '{call_sign}' already exists.")
+            return
+        self.result_observer = Observer(call_sign=call_sign, position=pos)
         self.accept()

@@ -13,9 +13,10 @@ from PySide6.QtWidgets import (
     QStackedWidget, QWidget, QDialogButtonBox,
 )
 
-from ..ballistics import FireTable
+from ..ballistics import FireTableLibrary
 from ..battery import Peloton, Group, KNOWN_SHELLS, shell_label, normalise_shell
 from ..geo import mgrs_to_utm
+from .mgrs_field import MgrsLineEdit
 from ..firemission import (
     Observer, FireMission, MethodOfFire, Sheaf, TargetType, Fuze,
     FireControl, TargetByGrid, TargetByPolar, TargetByShift,
@@ -70,13 +71,13 @@ class CallForFireDialog(QDialog):
     def __init__(
         self,
         peloton: Peloton,
-        firetable: FireTable,
+        library: FireTableLibrary,
         group: Group,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.peloton = peloton
-        self.firetable = firetable
+        self.library = library
         self.group = group
         self.result_fm: FireMission | None = None
         self.result_solutions: list[PieceSolution] | None = None
@@ -123,14 +124,23 @@ class CallForFireDialog(QDialog):
 
         fo_box = QGroupBox("1. Observer (FO)")
         fo_form = QFormLayout(fo_box)
+        self.fo_combo = QComboBox()
+        self.fo_combo.addItem("— manual entry —", None)
+        for o in self.peloton.observers:
+            self.fo_combo.addItem(o.call_sign, o.call_sign)
+        self.fo_combo.currentIndexChanged.connect(self._on_fo_selected)
         self.fo_call = QLineEdit(); self.fo_call.setPlaceholderText("call sign, e.g. OP1")
-        self.fo_mgrs = QLineEdit(); self.fo_mgrs.setPlaceholderText("MGRS")
+        self.fo_mgrs = MgrsLineEdit()
         self.fo_mgrs.setMinimumWidth(220)
         self.fo_alt = QDoubleSpinBox(); self.fo_alt.setRange(-500, 9000); self.fo_alt.setSuffix(" m")
+        fo_form.addRow("Saved FO", self.fo_combo)
         fo_form.addRow("Call sign", self.fo_call)
         fo_form.addRow("MGRS", self.fo_mgrs)
         fo_form.addRow("Altitude", self.fo_alt)
         col.addWidget(fo_box)
+        # Preselect the first saved FO, if any, for convenience.
+        if self.peloton.observers:
+            self.fo_combo.setCurrentIndex(1)
 
         tgt_box = QGroupBox("2. Target — location")
         tgt_layout = QVBoxLayout(tgt_box)
@@ -143,14 +153,14 @@ class CallForFireDialog(QDialog):
 
         # Grid
         g_w = QWidget(); g_f = QFormLayout(g_w)
-        self.g_mgrs = QLineEdit(); self.g_mgrs.setPlaceholderText("MGRS"); self.g_mgrs.setMinimumWidth(220)
+        self.g_mgrs = MgrsLineEdit(); self.g_mgrs.setMinimumWidth(220)
         self.g_alt = QDoubleSpinBox(); self.g_alt.setRange(-500, 9000); self.g_alt.setSuffix(" m")
         g_f.addRow("MGRS", self.g_mgrs); g_f.addRow("Altitude", self.g_alt)
         self.stack.addWidget(g_w)
 
         # Polar
         p_w = QWidget(); p_f = QFormLayout(p_w)
-        self.p_az = QDoubleSpinBox(); self.p_az.setRange(0, 6399); self.p_az.setSuffix(" mils")
+        self.p_az = QDoubleSpinBox(); self.p_az.setRange(0, 6399); self.p_az.setDecimals(0); self.p_az.setSuffix(" mils")
         self.p_rng = QDoubleSpinBox(); self.p_rng.setRange(0, 20000); self.p_rng.setSuffix(" m")
         self.p_up = QDoubleSpinBox(); self.p_up.setRange(-2000, 2000); self.p_up.setSuffix(" m")
         p_f.addRow("Azimuth", self.p_az); p_f.addRow("Range", self.p_rng); p_f.addRow("Δaltitude", self.p_up)
@@ -297,6 +307,18 @@ class CallForFireDialog(QDialog):
             )
         return None
 
+    def _on_fo_selected(self, _idx: int) -> None:
+        call = self.fo_combo.currentData()
+        if call is None:
+            return
+        try:
+            o = self.peloton.observer(call)
+        except KeyError:
+            return
+        self.fo_call.setText(o.call_sign)
+        self.fo_mgrs.setText(o.position.to_mgrs())
+        self.fo_alt.setValue(o.position.altitude_m)
+
     def _compute_and_accept(self) -> None:
         try:
             obs = Observer(
@@ -326,7 +348,7 @@ class CallForFireDialog(QDialog):
         )
         try:
             sols = solve_mission(
-                fm, self.peloton, self.firetable,
+                fm, self.peloton, self.library.resolve(fm.shell),
                 prefer_charge=self.prefer.currentText(),
             )
         except Exception as e:

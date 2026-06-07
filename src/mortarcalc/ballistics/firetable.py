@@ -52,6 +52,14 @@ class FireTable:
     fuze: str
     charges: tuple[Charge, ...]
 
+    @property
+    def range_span_m(self) -> tuple[float, float]:
+        """Min/max dracht (m) gedekt door alle ladingen samen."""
+        return (
+            min(c.min_range_m for c in self.charges),
+            max(c.max_range_m for c in self.charges),
+        )
+
     def charge_for(self, range_m: float, prefer: str = "lowest") -> Charge:
         """Kies een geschikte lading voor een gegeven dracht.
 
@@ -67,8 +75,12 @@ class FireTable:
         return min(candidates, key=lambda c: c.id)
 
 
-def load_firetable(path: str | Path) -> FireTable:
-    data = json.loads(Path(path).read_text())
+def firetable_from_dict(data: dict) -> FireTable:
+    """Bouw een FireTable uit een (gedeserialiseerde) JSON-structuur.
+
+    Raises KeyError/TypeError/ValueError bij ontbrekende of foute velden — de
+    aanroeper (bv. de upload-flow) vangt dit en toont een nette foutmelding.
+    """
     charges = tuple(
         Charge(
             id=c["id"],
@@ -88,4 +100,31 @@ def load_firetable(path: str | Path) -> FireTable:
         )
         for c in data["charges"]
     )
+    if not charges:
+        raise ValueError("Vuurtafel bevat geen ladingen ('charges').")
     return FireTable(shell=data["shell"], fuze=data["fuze"], charges=charges)
+
+
+def firetable_to_dict(ft: FireTable) -> dict:
+    """Serialiseer een FireTable terug naar de JSON-structuur (round-trip)."""
+    return {
+        "shell": ft.shell,
+        "fuze": ft.fuze,
+        "charges": [
+            {
+                "id": c.id,
+                "muzzle_velocity_mps": c.muzzle_velocity_mps,
+                "min_range_m": c.min_range_m,
+                "max_range_m": c.max_range_m,
+                "rows": [
+                    [r.range_m, r.elevation_mils, r.tof_s, r.drift_mils, r.dR_per_100m_height]
+                    for r in c.rows
+                ],
+            }
+            for c in ft.charges
+        ],
+    }
+
+
+def load_firetable(path: str | Path) -> FireTable:
+    return firetable_from_dict(json.loads(Path(path).read_text()))

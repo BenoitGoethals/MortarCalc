@@ -14,10 +14,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from ..battery import Peloton
+from ..battery import Peloton, Group
+from ..ballistics import FireTableLibrary
 from ..firemission.mission import TargetType, Sheaf
-from ..geo import utm_to_latlon, offset
+from ..geo import utm_to_latlon, offset, polar, Position
 from .mbtiles_server import TileServer
+from .position_diagram import AMMO_COLORS, SECTION_COLORS
 
 if TYPE_CHECKING:
     from .mission_panel import MissionPanel
@@ -30,10 +32,12 @@ def _latlon(pos) -> tuple[float, float]:
 class MapPanel(QWidget):
     """Toont peloton + actieve fire missions op een Leaflet-kaart."""
 
-    def __init__(self, peloton: Peloton, mission_panel: "MissionPanel") -> None:
+    def __init__(self, peloton: Peloton, mission_panel: "MissionPanel",
+                 library: FireTableLibrary | None = None) -> None:
         super().__init__()
         self.peloton = peloton
         self.mission_panel = mission_panel
+        self.library = library
         self.loaded = False
         self._tile_server = TileServer()
 
@@ -142,18 +146,33 @@ class MapPanel(QWidget):
         fos = []
         targets = []
         gt_lines = []
+        ot_lines = []
         seen_fos: set[str] = set()
+        # All FOs defined in Platoon & Lay show on the map regardless of missions.
+        for o in self.peloton.observers:
+            seen_fos.add(o.call_sign)
+            lat, lon = _latlon(o.position)
+            fos.append({"call_sign": o.call_sign, "lat": lat, "lon": lon,
+                        "mgrs": o.position.to_mgrs()})
         for group_name, fm in self.mission_panel.active.items():
             if fm is None:
                 continue
-            key = f"{fm.observer.call_sign}:{fm.observer.position.easting:.0f},{fm.observer.position.northing:.0f}"
-            if key not in seen_fos:
-                seen_fos.add(key)
+            if fm.observer.call_sign not in seen_fos:
+                seen_fos.add(fm.observer.call_sign)
                 lat, lon = _latlon(fm.observer.position)
                 fos.append({"call_sign": fm.observer.call_sign, "lat": lat, "lon": lon,
                             "mgrs": fm.observer.position.to_mgrs()})
             if fm.target_position is not None:
                 tlat, tlon = _latlon(fm.target_position)
+                # FO → target (OT) line: the observer's direction for this mission
+                folat, folon = _latlon(fm.observer.position)
+                ot = polar(fm.observer.position, fm.target_position)
+                ot_lines.append({
+                    "from_lat": folat, "from_lon": folon,
+                    "to_lat": tlat, "to_lon": tlon,
+                    "call_sign": fm.observer.call_sign, "fm_id": fm.id,
+                    "azimuth_mils": ot.azimuth_mils, "range_m": ot.range_m,
+                })
                 target_entry: dict = {
                     "fm_id": fm.id, "group": group_name, "lat": tlat, "lon": tlon,
                     "mgrs": fm.target_position.to_mgrs(),
@@ -193,7 +212,84 @@ class MapPanel(QWidget):
             "fos": fos,
             "targets": targets,
             "gt_lines": gt_lines,
+            "ot_lines": ot_lines,
+            "range_sectors": self._range_sectors(),
         }
+
+    # ---------- range sectors ("pies") ----------
+    def _centroid_pos(self, names) -> Position | None:
+        pts = [p.position for p in self.peloton.pieces if p.name in names]
+        if not pts:
+            return None
+        ref = self.peloton.pieces[0].position
+        return Position(
+            easting=sum(q.easting for q in pts) / len(pts),
+            northing=sum(q.northing for q in pts) / len(pts),
+            zone=ref.zone, hemisphere=ref.hemisphere,
+        )
+
+    @staticmethod
+    def _arc_latlon(center: Position, radius_m: float,
+                    start_mils: float, sweep_mils: float) -> list[list[float]]:
+        n = max(2, int(sweep_mils / 100) + 1)
+        out = []
+        for k in range(n + 1):
+            az = (start_mils + sweep_mils * k / n) % 6400.0
+            lat, lon = _latlon(offset(center, az, radius_m))
+            out.append([lat, lon])
+        return out
+
+    def _range_sectors(self) -> list[dict]:
+        """Per-section coverage sectors (min/max arcs per ammunition, clipped to
+        the section's left/right limits). Sections without limits → full rings;
+        no sections at all → one unrestricted entry on the battery centroid."""
+        if not self.library or not self.peloton.pieces:
+            return []
+        bands_def = []
+        for i, shell in enumerate(self.library.shells()):
+            lo, hi = self.library.tables[shell].range_span_m
+            bands_def.append((shell, lo, hi, AMMO_COLORS[i % len(AMMO_COLORS)]))
+        overall_max = max(hi for _, _, hi, _ in bands_def)
+
+        sections = [g for g in self.peloton.groups if self._centroid_pos(g.member_names)]
+        if not sections:
+            center = self._centroid_pos([p.name for p in self.peloton.pieces])
+            battery = Group(name="Battery")  # unlimited (full rings)
+            return [self._sector_entry(battery, 0, center, bands_def, overall_max)]
+        out = []
+        for gi, g in enumerate(self.peloton.groups):
+            center = self._centroid_pos(g.member_names)
+            if center is None:
+                continue
+            out.append(self._sector_entry(g, gi, center, bands_def, overall_max))
+        return out
+
+    def _sector_entry(self, group: Group, gi: int, center: Position,
+                      bands_def, overall_max: float) -> dict:
+        clat, clon = _latlon(center)
+        left = group.left_limit_mils
+        sweep = group.sector_width_mils()
+        limited = group.has_limits()
+        entry: dict = {
+            "section": group.name,
+            "color": SECTION_COLORS[gi % len(SECTION_COLORS)],
+            "limited": limited,
+            "center": [clat, clon],
+            "bands": [], "fill": [], "limit_lines": [],
+        }
+        for shell, lo, hi, color in bands_def:
+            band = {"shell": shell, "color": color,
+                    "max_m": hi, "min_m": lo,
+                    "max_arc": self._arc_latlon(center, hi, left, sweep)}
+            if lo > 0:
+                band["min_arc"] = self._arc_latlon(center, lo, left, sweep)
+            entry["bands"].append(band)
+        if limited:
+            entry["fill"] = [[clat, clon]] + self._arc_latlon(center, overall_max, left, sweep) + [[clat, clon]]
+            for az in (left, (left + sweep) % 6400.0):
+                elat, elon = _latlon(offset(center, az, overall_max))
+                entry["limit_lines"].append([[clat, clon], [elat, elon]])
+        return entry
 
     # ---------- cleanup ----------
     def closeEvent(self, event) -> None:  # noqa: N802

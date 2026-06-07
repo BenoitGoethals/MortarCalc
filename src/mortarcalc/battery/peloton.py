@@ -27,18 +27,50 @@ class AimingPoint:
     position: Position
 
 
+@dataclass(frozen=True)
+class Observer:
+    """Forward Observer / OP: tactische roepnaam + stelling.
+
+    Persistent op pelotonsniveau zodat dezelfde FO's hergebruikt kunnen worden
+    over meerdere vuuropdrachten (selecteerbaar in de Call-For-Fire dialoog).
+    """
+    call_sign: str
+    position: Position
+
+
 @dataclass
 class Group:
-    """Waakgroep: subset van stukken met eigen PDF.
+    """Waakgroep: subset van stukken met eigen PDF en vuursector.
 
     `member_names` verwijst naar Piece.name in het bovenliggende Peloton.
+    `left_limit_mils`/`right_limit_mils` begrenzen de vuursector (laterale
+    grenzen). De sector loopt met de klok mee van links naar rechts; gelijke
+    grenzen (default 0/0) betekenen 'onbegrensd' (volledige cirkel).
     """
     name: str
     pdf_mils: float = 0.0
     member_names: list[str] = field(default_factory=list)
+    left_limit_mils: float = 0.0
+    right_limit_mils: float = 0.0
 
     def set_pdf(self, pdf_mils: float) -> None:
         self.pdf_mils = pdf_mils % 6400.0
+
+    def set_limits(self, left_mils: float, right_mils: float) -> None:
+        self.left_limit_mils = left_mils % 6400.0
+        self.right_limit_mils = right_mils % 6400.0
+
+    def sector_width_mils(self) -> float:
+        """Breedte van de vuursector (klok-mee, links→rechts), in mils.
+
+        Gelijke grenzen → 6400 (onbegrensd / volledige cirkel).
+        """
+        width = (self.right_limit_mils - self.left_limit_mils) % 6400.0
+        return 6400.0 if width == 0.0 else width
+
+    def has_limits(self) -> bool:
+        """True als er een echte (begrensde) vuursector is ingesteld."""
+        return self.left_limit_mils != self.right_limit_mils
 
 
 DEFAULT_LOW_AMMO_THRESHOLD = 5
@@ -50,6 +82,7 @@ class Peloton:
     pieces: list[Piece] = field(default_factory=list)
     groups: list[Group] = field(default_factory=list)
     aiming_points: list[AimingPoint] = field(default_factory=list)
+    observers: list[Observer] = field(default_factory=list)
     # munitie: { piece_name: { shell_type: aantal } }
     ammo: dict[str, dict[str, int]] = field(default_factory=dict)
     low_ammo_threshold: int = DEFAULT_LOW_AMMO_THRESHOLD
@@ -192,6 +225,32 @@ class Peloton:
             if ap.name == name:
                 return ap
         raise KeyError(name)
+
+    # ---------- waarnemers (FO) ----------
+    def add_observer(self, obs: Observer) -> None:
+        if any(o.call_sign == obs.call_sign for o in self.observers):
+            raise ValueError(f"FO '{obs.call_sign}' bestaat al.")
+        self.observers.append(obs)
+
+    def observer(self, call_sign: str) -> Observer:
+        for o in self.observers:
+            if o.call_sign == call_sign:
+                return o
+        raise KeyError(call_sign)
+
+    def remove_observer(self, call_sign: str) -> None:
+        self.observers = [o for o in self.observers if o.call_sign != call_sign]
+
+    def update_observer(self, original_call_sign: str, new_obs: Observer) -> None:
+        idx = next((i for i, o in enumerate(self.observers)
+                    if o.call_sign == original_call_sign), None)
+        if idx is None:
+            raise KeyError(original_call_sign)
+        if new_obs.call_sign != original_call_sign and any(
+            o.call_sign == new_obs.call_sign for o in self.observers
+        ):
+            raise ValueError(f"FO '{new_obs.call_sign}' bestaat al.")
+        self.observers[idx] = new_obs
 
     # ---------- munitie ----------
     def set_ammo(self, piece_name: str, shell: str, count: int) -> None:

@@ -1,5 +1,5 @@
 from .piece import Piece
-from .peloton import Peloton, Group, AimingPoint, DEFAULT_LOW_AMMO_THRESHOLD
+from .peloton import Peloton, Group, AimingPoint, Observer, DEFAULT_LOW_AMMO_THRESHOLD
 from .lay import lay_on_watch, SightSetting
 from .fireplan import PlannedTarget
 from .shells import (
@@ -14,6 +14,7 @@ __all__ = [
     "Peloton",
     "Group",
     "AimingPoint",
+    "Observer",
     "DEFAULT_LOW_AMMO_THRESHOLD",
     "lay_on_watch",
     "SightSetting",

@@ -8,7 +8,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QMainWindow, QTabWidget, QStatusBar, QFileDialog, QMessageBox, QDialog
 
-from ..ballistics import FireTable
+from ..ballistics import FireTableLibrary, FireTableRepository
 from ..battery import Peloton
 from ..persistence import save_state, load_state
 from ..state import StateRepository
@@ -19,6 +19,7 @@ from .history_panel import HistoryPanel
 from .map_panel import MapPanel
 from .fireplan_panel import FirePlanPanel
 from .ammo_panel import AmmoPanel
+from .firetable_panel import FireTablePanel
 from .archive_dialog import ArchiveDialog
 
 
@@ -28,8 +29,9 @@ class MainWindow(QMainWindow):
     def __init__(
         self,
         peloton: Peloton,
-        firetable: FireTable,
+        library: FireTableLibrary,
         autosave: StateRepository | None = None,
+        firetable_repo: FireTableRepository | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("MortarCalc — 81 mm FDC")
@@ -37,7 +39,8 @@ class MainWindow(QMainWindow):
         self.resize(1320, 820)
 
         self.peloton = peloton
-        self.firetable = firetable
+        self.library = library
+        self.firetable_repo = firetable_repo or FireTableRepository()
         self.autosave_repo = autosave or StateRepository()
         self.current_file: Path | None = None
 
@@ -46,25 +49,32 @@ class MainWindow(QMainWindow):
             reengage_callback=self._reengage_from_history,
         )
         self.mission_panel = MissionPanel(
-            peloton=peloton, firetable=firetable,
+            peloton=peloton, library=library,
             on_changed=self._on_changed, on_eom=self._on_eom,
             archive_callback=self._archive_now,
         )
         self.section_panel = SectionPanel(
             peloton=peloton, on_changed=self._on_changed,
-            archive_callback=self._archive_now,
+            archive_callback=self._archive_now, library=library,
         )
         self.fireplan_panel = FirePlanPanel(
-            peloton=peloton, firetable=firetable,
+            peloton=peloton, library=library,
             engage_callback=self._engage_from_fire_plan,
             archive_callback=self._archive_now,
         )
-        self.map_panel = MapPanel(peloton=peloton, mission_panel=self.mission_panel)
+        self.map_panel = MapPanel(
+            peloton=peloton, mission_panel=self.mission_panel, library=library,
+        )
         self.ammo_panel = AmmoPanel(peloton=peloton, on_changed=self._on_changed)
+        self.firetable_panel = FireTablePanel(
+            library=library, repository=self.firetable_repo,
+            on_changed=self._on_changed,
+        )
 
         tabs = QTabWidget()
         tabs.addTab(self.section_panel, "Platoon && Lay")
         tabs.addTab(self.ammo_panel, "Ammunition")
+        tabs.addTab(self.firetable_panel, "Firing Tables")
         tabs.addTab(self.fireplan_panel, "Fire Plan")
         tabs.addTab(self.mission_panel, "Fire Missions")
         tabs.addTab(self.history_panel, "History")
@@ -100,6 +110,11 @@ class MainWindow(QMainWindow):
         a_reset_all = QAction("Reset All (archive + clear)", self); a_reset_all.triggered.connect(self._reset_all)
         m_archives.addAction(a_archive); m_archives.addAction(a_browse)
         m_archives.addSeparator(); m_archives.addAction(a_reset_all)
+
+        m_sim = self.menuBar().addMenu("&Simulator")
+        a_demo = QAction("Load demo scenario (3×2 mortars + FOs)…", self)
+        a_demo.triggered.connect(self._load_demo)
+        m_sim.addAction(a_demo)
 
         m_file.addSeparator(); m_file.addAction(a_quit)
 
@@ -143,10 +158,12 @@ class MainWindow(QMainWindow):
         f = f" — {self.current_file.name}" if self.current_file else ""
         last = self.autosave_repo.last_save
         autosave_str = f" (autosaved {last.strftime('%H:%M:%S')})" if last else ""
+        n_tables = len(self.library)
+        default = self.library.default_shell or "—"
         self.statusBar().showMessage(
             f"Platoon: {len(self.peloton.pieces)} pc(s), {len(self.peloton.groups)} section(s), "
             f"{len(self.peloton.aiming_points)} AP  ·  "
-            f"firing table {self.firetable.shell}{f}{autosave_str}"
+            f"firing tables: {n_tables} (default {default}){f}{autosave_str}"
         )
 
     # ---------- autosave ----------
@@ -197,6 +214,31 @@ class MainWindow(QMainWindow):
         self._archive_now(label="pre_restore")
         self._load_state_from(dlg.selected_path)
 
+    def _load_demo(self) -> None:
+        if QMessageBox.question(
+            self, "Load demo scenario",
+            "Archive the current state and load a demo platoon?\n\n"
+            "3 sections × 2 mortars (each with a base gun and sector limits), "
+            "DOS ammunition per tube, shared aiming points, and 2 FOs per section.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        from ..simulator import build_demo_peloton
+        self._archive_now(label="before_demo")
+        demo = build_demo_peloton()
+        self.peloton.pieces[:] = demo.pieces
+        self.peloton.groups[:] = demo.groups
+        self.peloton.aiming_points[:] = demo.aiming_points
+        self.peloton.observers[:] = demo.observers
+        self.peloton.ammo = demo.ammo
+        self.peloton.fire_plan = demo.fire_plan
+        self.peloton.h_hour = demo.h_hour
+        self.peloton.next_fm_number = demo.next_fm_number
+        self.history_panel.clear()
+        self.mission_panel.clear_active()
+        self.current_file = None
+        self._refresh_all()
+
     def _reset_all(self) -> None:
         if QMessageBox.question(
             self, "Reset All",
@@ -209,6 +251,7 @@ class MainWindow(QMainWindow):
         self.peloton.pieces.clear()
         self.peloton.groups.clear()
         self.peloton.aiming_points.clear()
+        self.peloton.observers.clear()
         self.peloton.ammo.clear()
         self.peloton.fire_plan.clear()
         self.peloton.h_hour = None
@@ -232,6 +275,7 @@ class MainWindow(QMainWindow):
         self.peloton.pieces.clear()
         self.peloton.groups.clear()
         self.peloton.aiming_points.clear()
+        self.peloton.observers.clear()
         self.peloton.ammo.clear()
         self.peloton.fire_plan.clear()
         self.peloton.h_hour = None
@@ -254,6 +298,7 @@ class MainWindow(QMainWindow):
         self.peloton.pieces[:] = pel.pieces
         self.peloton.groups[:] = pel.groups
         self.peloton.aiming_points[:] = pel.aiming_points
+        self.peloton.observers[:] = pel.observers
         self.peloton.ammo = pel.ammo
         self.peloton.low_ammo_threshold = pel.low_ammo_threshold
         self.peloton.fire_plan = pel.fire_plan
@@ -291,4 +336,5 @@ class MainWindow(QMainWindow):
         self.map_panel.refresh()
         self.fireplan_panel.refresh()
         self.ammo_panel.refresh()
+        self.firetable_panel.refresh()
         self._update_status()

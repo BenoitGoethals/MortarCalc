@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..geo import Position, latlon_to_utm, mgrs_to_utm
+from .mgrs_field import MgrsLineEdit
 
 
 class CoordDialog(QDialog):
@@ -50,7 +51,7 @@ class CoordDialog(QDialog):
 
     def _build_mgrs_tab(self, default_alt: float) -> QWidget:
         w = QWidget(); f = QFormLayout(w)
-        self.in_mgrs = QLineEdit(); self.in_mgrs.setPlaceholderText("bv. 31UDS1234567890")
+        self.in_mgrs = MgrsLineEdit()
         self.in_alt_m = QDoubleSpinBox(); self.in_alt_m.setRange(-500, 9000); self.in_alt_m.setSuffix(" m"); self.in_alt_m.setValue(default_alt)
         f.addRow("MGRS", self.in_mgrs)
         f.addRow("Hoogte", self.in_alt_m)

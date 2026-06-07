@@ -43,8 +43,8 @@ class EditSectionDialog(QDialog):
         header.setStyleSheet("font-size: 14px;")
         root.addWidget(header)
 
-        # ---- PDF row ----
-        pdf_box = QGroupBox("Primary Direction of Fire (watch)")
+        # ---- PDF + sector limits ----
+        pdf_box = QGroupBox("Sector of fire (watch)")
         pdf_form = QFormLayout(pdf_box)
         self.pdf_spin = QDoubleSpinBox()
         self.pdf_spin.setRange(0, 6399)
@@ -53,6 +53,22 @@ class EditSectionDialog(QDialog):
         self.pdf_spin.setValue(group.pdf_mils)
         self.pdf_spin.valueChanged.connect(self._on_pdf_changed)
         pdf_form.addRow("PDF", self.pdf_spin)
+
+        self.left_spin = QDoubleSpinBox()
+        self.left_spin.setRange(0, 6399); self.left_spin.setDecimals(0)
+        self.left_spin.setSuffix(" mils"); self.left_spin.setValue(group.left_limit_mils)
+        self.left_spin.valueChanged.connect(self._on_limits_changed)
+        self.right_spin = QDoubleSpinBox()
+        self.right_spin.setRange(0, 6399); self.right_spin.setDecimals(0)
+        self.right_spin.setSuffix(" mils"); self.right_spin.setValue(group.right_limit_mils)
+        self.right_spin.valueChanged.connect(self._on_limits_changed)
+        pdf_form.addRow("Left limit", self.left_spin)
+        pdf_form.addRow("Right limit", self.right_spin)
+        hint = QLabel("Sector runs clockwise from left to right limit. "
+                      "Equal limits = unrestricted.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #95a5a6; font-size: 11px;")
+        pdf_form.addRow("", hint)
         root.addWidget(pdf_box)
 
         # ---- live diagram for this section ----
@@ -112,6 +128,11 @@ class EditSectionDialog(QDialog):
     # ------------------------------------------------------------------ handlers
     def _on_pdf_changed(self, val: float) -> None:
         self.group.set_pdf(val)
+        self.diagram.update()
+        self.on_changed()
+
+    def _on_limits_changed(self, _val: float = 0.0) -> None:
+        self.group.set_limits(self.left_spin.value(), self.right_spin.value())
         self.diagram.update()
         self.on_changed()
 

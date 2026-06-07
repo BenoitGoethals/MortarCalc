@@ -7,13 +7,14 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QFormLayout, QLineEdit, QPushButton, QDoubleSpinBox, QGroupBox,
     QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QMessageBox,
-    QListWidget, QListWidgetItem, QAbstractItemView,
+    QListWidget, QListWidgetItem, QAbstractItemView, QCheckBox,
     QSplitter, QDialog, QDialogButtonBox,
 )
 
 from ..battery import Peloton, Group
+from ..ballistics import FireTableLibrary
 from .position_diagram import BatteryDiagram
-from .piece_dialog import AddPieceDialog, AddAimingPointDialog
+from .piece_dialog import AddPieceDialog, AddAimingPointDialog, AddObserverDialog
 from .section_dialog import EditSectionDialog
 
 
@@ -25,16 +26,19 @@ class SectionPanel(QWidget):
         peloton: Peloton,
         on_changed: Callable[[], None],
         archive_callback: Callable[[str], object] | None = None,
+        library: FireTableLibrary | None = None,
     ) -> None:
         super().__init__()
         self.peloton = peloton
         self.on_changed = on_changed
         self.archive_callback = archive_callback
+        self.library = library
 
         splitter = QSplitter(Qt.Horizontal)
         left = QWidget(); left_layout = QVBoxLayout(left)
         left_layout.addWidget(self._build_pieces_group())
         left_layout.addWidget(self._build_aiming_points_group())
+        left_layout.addWidget(self._build_observers_group())
         left_layout.addStretch(1)
         splitter.addWidget(left)
         right = QWidget(); right_layout = QVBoxLayout(right)
@@ -182,6 +186,76 @@ class SectionPanel(QWidget):
         self.peloton.aiming_points.clear()
         self._refresh_all()
 
+    # ---------- observers (FO) ----------
+    def _build_observers_group(self) -> QGroupBox:
+        box = QGroupBox("Forward Observers (FO / OP)")
+        wrap = QVBoxLayout(box)
+        btns = QHBoxLayout()
+        b_add = QPushButton("Add FO…"); b_add.clicked.connect(self._add_observer)
+        b_edit = QPushButton("Edit selected…"); b_edit.clicked.connect(self._edit_observer)
+        b_del = QPushButton("Remove selected"); b_del.clicked.connect(self._remove_observer)
+        b_reset = QPushButton("Reset all"); b_reset.clicked.connect(self._reset_observers)
+        btns.addWidget(b_add); btns.addWidget(b_edit); btns.addWidget(b_del)
+        btns.addStretch(1); btns.addWidget(b_reset)
+        self.fo_table = QTableWidget(0, 3)
+        self.fo_table.setHorizontalHeaderLabels(["Call sign", "MGRS", "Altitude"])
+        self.fo_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.fo_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.fo_table.verticalHeader().setVisible(False)
+        self.fo_table.cellDoubleClicked.connect(lambda row, _c: self._edit_observer_row(row))
+        wrap.addLayout(btns); wrap.addWidget(self.fo_table)
+        return box
+
+    def _add_observer(self) -> None:
+        dlg = AddObserverDialog(self.peloton, self)
+        if dlg.exec() != QDialog.Accepted or dlg.result_observer is None:
+            return
+        try:
+            self.peloton.add_observer(dlg.result_observer)
+        except ValueError as e:
+            QMessageBox.warning(self, "FO", str(e)); return
+        self._refresh_all()
+
+    def _edit_observer(self) -> None:
+        rows = {i.row() for i in self.fo_table.selectedIndexes()}
+        if len(rows) != 1:
+            QMessageBox.information(self, "Edit FO", "Select exactly one FO to edit.")
+            return
+        self._edit_observer_row(next(iter(rows)))
+
+    def _edit_observer_row(self, row: int) -> None:
+        item = self.fo_table.item(row, 0)
+        if item is None:
+            return
+        call_sign = item.text()
+        try:
+            obs = self.peloton.observer(call_sign)
+        except KeyError:
+            return
+        dlg = AddObserverDialog(self.peloton, self, observer=obs)
+        if dlg.exec() != QDialog.Accepted or dlg.result_observer is None:
+            return
+        try:
+            self.peloton.update_observer(call_sign, dlg.result_observer)
+        except ValueError as e:
+            QMessageBox.warning(self, "FO", str(e)); return
+        self._refresh_all()
+
+    def _remove_observer(self) -> None:
+        rows = {i.row() for i in self.fo_table.selectedIndexes()}
+        for r in sorted(rows, reverse=True):
+            self.peloton.remove_observer(self.fo_table.item(r, 0).text())
+        self._refresh_all()
+
+    def _reset_observers(self) -> None:
+        if not self.peloton.observers:
+            return
+        if not self._confirm_reset("FOs"):
+            return
+        self._archive_then("before_reset_fos")
+        self.peloton.observers.clear()
+        self._refresh_all()
+
     def _reset_groups(self) -> None:
         if not self.peloton.groups:
             return
@@ -213,8 +287,11 @@ class SectionPanel(QWidget):
         self.groups_list.itemDoubleClicked.connect(self._open_group_dialog)
         wrap.addWidget(self.groups_list)
 
-        # Always-visible battery diagram
-        self.battery_diagram = BatteryDiagram(self.peloton)
+        # Always-visible battery diagram + range-ring toggle
+        self.battery_diagram = BatteryDiagram(self.peloton, library=self.library)
+        self.range_toggle = QCheckBox("Show range sectors (left/right limits × ammunition)")
+        self.range_toggle.toggled.connect(self.battery_diagram.set_show_ranges)
+        wrap.addWidget(self.range_toggle)
         wrap.addWidget(self.battery_diagram, stretch=1)
         return box
 
@@ -263,8 +340,30 @@ class SectionPanel(QWidget):
         name_edit.setMinimumWidth(220)
         pdf_spin = QDoubleSpinBox()
         pdf_spin.setRange(0, 6399); pdf_spin.setSuffix(" mils"); pdf_spin.setDecimals(0)
+        left_spin = QDoubleSpinBox()
+        left_spin.setRange(0, 6399); left_spin.setSuffix(" mils"); left_spin.setDecimals(0)
+        right_spin = QDoubleSpinBox()
+        right_spin.setRange(0, 6399); right_spin.setSuffix(" mils"); right_spin.setDecimals(0)
+        # Default to an 1600-mil sector centred on the PDF; updates as PDF changes
+        # until the user edits a limit by hand.
+        self._limits_touched = False
+        left_spin.valueChanged.connect(lambda _: setattr(self, "_limits_touched", True))
+        right_spin.valueChanged.connect(lambda _: setattr(self, "_limits_touched", True))
+
+        def _sync_limits(pdf: float) -> None:
+            if self._limits_touched:
+                return
+            left_spin.blockSignals(True); right_spin.blockSignals(True)
+            left_spin.setValue((pdf - 800) % 6400)
+            right_spin.setValue((pdf + 800) % 6400)
+            left_spin.blockSignals(False); right_spin.blockSignals(False)
+
+        pdf_spin.valueChanged.connect(_sync_limits)
+        _sync_limits(0)
         form.addRow("Name", name_edit)
         form.addRow("Primary Direction of Fire", pdf_spin)
+        form.addRow("Left limit", left_spin)
+        form.addRow("Right limit", right_spin)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
@@ -277,7 +376,11 @@ class SectionPanel(QWidget):
             QMessageBox.information(self, "Name", "Provide a section name.")
             return
         try:
-            self.peloton.add_group(Group(name=name, pdf_mils=pdf_spin.value()))
+            self.peloton.add_group(Group(
+                name=name, pdf_mils=pdf_spin.value(),
+                left_limit_mils=left_spin.value(),
+                right_limit_mils=right_spin.value(),
+            ))
         except ValueError as e:
             QMessageBox.warning(self, "Section", str(e))
             return
@@ -307,6 +410,7 @@ class SectionPanel(QWidget):
     def _refresh_all(self) -> None:
         self._refresh_pieces_table()
         self._refresh_ap_table()
+        self._refresh_observers_table()
         self._refresh_groups_list()
         self.battery_diagram.update()
         self.on_changed()
@@ -347,6 +451,13 @@ class SectionPanel(QWidget):
             self.ap_table.setItem(i, 0, QTableWidgetItem(ap.name))
             self.ap_table.setItem(i, 1, QTableWidgetItem(ap.position.to_mgrs()))
             self.ap_table.setItem(i, 2, QTableWidgetItem(f"{ap.position.altitude_m:.0f} m"))
+
+    def _refresh_observers_table(self) -> None:
+        self.fo_table.setRowCount(len(self.peloton.observers))
+        for i, o in enumerate(self.peloton.observers):
+            self.fo_table.setItem(i, 0, QTableWidgetItem(o.call_sign))
+            self.fo_table.setItem(i, 1, QTableWidgetItem(o.position.to_mgrs()))
+            self.fo_table.setItem(i, 2, QTableWidgetItem(f"{o.position.altitude_m:.0f} m"))
 
     def _refresh_groups_list(self) -> None:
         prev = self._selected_group_name()

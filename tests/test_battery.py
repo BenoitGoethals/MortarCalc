@@ -60,6 +60,63 @@ def test_section_without_base_returns_none(peloton_4x2):
     assert peloton_4x2.base_of(peloton_4x2.group("Zuid")) is None
 
 
+def test_group_sector_limits():
+    g = Group("S", pdf_mils=1600, left_limit_mils=800, right_limit_mils=2400)
+    assert g.has_limits()
+    assert g.sector_width_mils() == 1600.0
+    # clockwise wrap-around sector across north
+    g.set_limits(6000, 400)
+    assert g.sector_width_mils() == 800.0
+    # normalisation
+    g.set_limits(7000, -200)
+    assert g.left_limit_mils == 600.0 and g.right_limit_mils == 6200.0
+
+
+def test_group_without_limits_is_full_circle():
+    g = Group("S", pdf_mils=0)
+    assert not g.has_limits()
+    assert g.sector_width_mils() == 6400.0
+
+
+def test_section_limits_persist_round_trip(tmp_path):
+    from mortarcalc.persistence import save_state, load_state
+    pel = Peloton()
+    pel.add_piece(Piece("A", mgrs_to_utm("31UDS1234567890", 80)))
+    pel.add_group(Group("N", pdf_mils=1600, member_names=["A"],
+                        left_limit_mils=800, right_limit_mils=2400))
+    path = tmp_path / "s.json"
+    save_state(path, pel, [], [])
+    loaded, _, _ = load_state(path)
+    g = loaded.group("N")
+    assert g.left_limit_mils == 800.0 and g.right_limit_mils == 2400.0
+
+
+def test_observer_crud_and_uniqueness():
+    from mortarcalc.battery import Observer
+    pel = Peloton()
+    pel.add_observer(Observer("OP1", mgrs_to_utm("31UDS1500068000", 120)))
+    assert pel.observer("OP1").call_sign == "OP1"
+    with pytest.raises(ValueError):
+        pel.add_observer(Observer("OP1", mgrs_to_utm("31UDS1500068000", 120)))
+    pel.update_observer("OP1", Observer("OP1A", mgrs_to_utm("31UDS1510068100", 130)))
+    assert [o.call_sign for o in pel.observers] == ["OP1A"]
+    pel.remove_observer("OP1A")
+    assert pel.observers == []
+
+
+def test_observers_persist_round_trip(tmp_path):
+    from mortarcalc.battery import Observer
+    from mortarcalc.persistence import save_state, load_state
+    pel = Peloton()
+    pel.add_observer(Observer("OP1", mgrs_to_utm("31UDS1500068000", 120)))
+    pel.add_observer(Observer("OP2", mgrs_to_utm("31UDS1100066000", 90)))
+    path = tmp_path / "s.json"
+    save_state(path, pel, [], [])
+    loaded, _, _ = load_state(path)
+    assert [o.call_sign for o in loaded.observers] == ["OP1", "OP2"]
+    assert loaded.observer("OP2").position.altitude_m == 90
+
+
 def test_duplicate_piece_name_raises():
     pel = Peloton()
     pel.add_piece(Piece("A", mgrs_to_utm("31UDS1234567890")))

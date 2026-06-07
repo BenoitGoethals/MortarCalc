@@ -2,7 +2,10 @@ import math
 
 import pytest
 
-from mortarcalc.geo import Position, polar, offset, mgrs_to_utm, utm_to_mgrs, utm_to_latlon, latlon_to_utm
+from mortarcalc.geo import (
+    Position, polar, offset, mgrs_to_utm, utm_to_mgrs, utm_to_latlon, latlon_to_utm,
+    validate_mgrs, normalize_mgrs, MGRSError,
+)
 
 
 def _pos(e, n, alt=0.0):
@@ -63,3 +66,40 @@ def test_cross_zone_raises():
     b = Position(0, 0, zone=32, hemisphere="N")
     with pytest.raises(ValueError):
         polar(a, b)
+
+
+# ---------------------------------------------------------------- MGRS validation
+def test_validate_mgrs_normalizes_spaces_and_case():
+    assert validate_mgrs(" 31u ds 12345 67890 ") == "31UDS1234567890"
+    assert normalize_mgrs(" 31u ds 123 ") == "31UDS123"
+
+
+@pytest.mark.parametrize("good", [
+    "31UDS1234567890",   # 10-digit
+    "31UDS12345678",     # 8-digit
+    "31UDS123456",       # 6-digit
+    "31UDS1267",         # 4-digit
+    "4QFJ1267",          # single-digit zone
+])
+def test_validate_mgrs_accepts_valid(good):
+    assert validate_mgrs(good) == good.upper()
+
+
+@pytest.mark.parametrize("bad", [
+    "",                  # empty
+    "HELLO",             # garbage
+    "31UDS123456789",    # odd digit count
+    "31IDS1234567890",   # band I not allowed
+    "31UDS1234567890I",  # trailing junk / odd
+    "99UDS1234567890",   # zone out of range
+    "31UIO1234567890",   # square letter I
+    "31UDS123456789012", # too many digits
+])
+def test_validate_mgrs_rejects_invalid(bad):
+    with pytest.raises(MGRSError):
+        validate_mgrs(bad)
+
+
+def test_mgrs_to_utm_raises_clear_error_on_invalid():
+    with pytest.raises(MGRSError):
+        mgrs_to_utm("not-a-grid")

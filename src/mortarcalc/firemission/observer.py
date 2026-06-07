@@ -15,13 +15,7 @@ from typing import Union
 
 from ..geo import Position, offset, polar
 from ..units import mils_to_rad
-from ..battery import Peloton
-
-
-@dataclass(frozen=True)
-class Observer:
-    call_sign: str
-    position: Position
+from ..battery import Peloton, Observer  # Observer leeft op batterijniveau (persistent)
 
 
 class TargetSpec(ABC):

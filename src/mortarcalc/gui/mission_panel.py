@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QDoubleSpinBox, QDialog, QFrame,
 )
 
-from ..ballistics import FireTable
+from ..ballistics import FireTableLibrary
 from ..battery import Peloton, Group
 from ..export import export_fm_to_pdf
 from ..firemission import (
@@ -29,14 +29,14 @@ class MissionPanel(QWidget):
     def __init__(
         self,
         peloton: Peloton,
-        firetable: FireTable,
+        library: FireTableLibrary,
         on_changed: Callable[[], None] | None = None,
         on_eom: Callable[[FireMission], None] | None = None,
         archive_callback: Callable[[str], object] | None = None,
     ) -> None:
         super().__init__()
         self.peloton = peloton
-        self.firetable = firetable
+        self.library = library
         self.on_changed = on_changed
         self.on_eom = on_eom
         self.archive_callback = archive_callback
@@ -122,7 +122,7 @@ class MissionPanel(QWidget):
         self.solutions.clear()
         for fm in missions:
             try:
-                sols = solve_mission(fm, self.peloton, self.firetable)
+                sols = solve_mission(fm, self.peloton, self.library.resolve(fm.shell))
             except Exception:
                 sols = []
             self.active[fm.group_name] = fm
@@ -171,7 +171,7 @@ class MissionPanel(QWidget):
         )
         new_fm.note(f"Re-engagement of {old_fm.id}")
         try:
-            sols = solve_mission(new_fm, self.peloton, self.firetable)
+            sols = solve_mission(new_fm, self.peloton, self.library.resolve(new_fm.shell))
         except Exception as e:
             QMessageBox.critical(self, "Computation failed", str(e))
             return None
@@ -405,7 +405,7 @@ class MissionPanel(QWidget):
     def _open_cff_dialog(self, group: Group) -> None:
         dlg = CallForFireDialog(
             peloton=self.peloton,
-            firetable=self.firetable,
+            library=self.library,
             group=group,
             parent=self,
         )
@@ -594,7 +594,7 @@ class MissionPanel(QWidget):
             apply_correction(fm, corr)
             fm.target_spec = TargetByGrid(position=fm.target_position)
             try:
-                sols2 = solve_mission(fm, self.peloton, self.firetable)
+                sols2 = solve_mission(fm, self.peloton, self.library.resolve(fm.shell))
             except Exception as e:
                 QMessageBox.critical(self, "Computation failed", str(e)); return
             self.solutions[group.name] = sols2

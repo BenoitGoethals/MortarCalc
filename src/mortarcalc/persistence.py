@@ -6,7 +6,7 @@ JSON-formaat (versie 1):
       "version": 1,
       "peloton": {
         "pieces": [{"name", "easting", "northing", "zone", "hemisphere", "altitude_m", "is_base"}],
-        "groups": [{"name", "pdf_mils", "member_names": [...]}],
+        "groups": [{"name", "pdf_mils", "member_names": [...], "left_limit_mils", "right_limit_mils"}],
         "aiming_points": [{"name", "easting", "northing", "zone", "hemisphere", "altitude_m"}]
       },
       "missions": [...]   # alleen historiek, geen actieve FMs
@@ -189,12 +189,21 @@ def peloton_to_dict(pel: Peloton) -> dict[str, Any]:
             for p in pel.pieces
         ],
         "groups": [
-            {"name": g.name, "pdf_mils": g.pdf_mils, "member_names": list(g.member_names)}
+            {
+                "name": g.name, "pdf_mils": g.pdf_mils,
+                "member_names": list(g.member_names),
+                "left_limit_mils": g.left_limit_mils,
+                "right_limit_mils": g.right_limit_mils,
+            }
             for g in pel.groups
         ],
         "aiming_points": [
             {"name": ap.name, **_pos_to_dict(ap.position)}
             for ap in pel.aiming_points
+        ],
+        "observers": [
+            {"call_sign": o.call_sign, **_pos_to_dict(o.position)}
+            for o in pel.observers
         ],
         "ammo": {pname: dict(shells) for pname, shells in pel.ammo.items()},
         "low_ammo_threshold": pel.low_ammo_threshold,
@@ -209,10 +218,16 @@ def peloton_from_dict(d: dict[str, Any]) -> Peloton:
     for pd in d.get("pieces", []):
         pel.add_piece(Piece(name=pd["name"], position=_pos_from_dict(pd), is_base=bool(pd.get("is_base", False))))
     for gd in d.get("groups", []):
-        pel.add_group(Group(name=gd["name"], pdf_mils=float(gd.get("pdf_mils", 0.0)),
-                            member_names=list(gd.get("member_names", []))))
+        pel.add_group(Group(
+            name=gd["name"], pdf_mils=float(gd.get("pdf_mils", 0.0)),
+            member_names=list(gd.get("member_names", [])),
+            left_limit_mils=float(gd.get("left_limit_mils", 0.0)),
+            right_limit_mils=float(gd.get("right_limit_mils", 0.0)),
+        ))
     for ad in d.get("aiming_points", []):
         pel.add_aiming_point(AimingPoint(name=ad["name"], position=_pos_from_dict(ad)))
+    for od in d.get("observers", []):
+        pel.add_observer(Observer(call_sign=od["call_sign"], position=_pos_from_dict(od)))
     pel.ammo = {pname: dict(shells) for pname, shells in d.get("ammo", {}).items()}
     pel.low_ammo_threshold = int(d.get("low_ammo_threshold", pel.low_ammo_threshold))
     pel.fire_plan = [_planned_from_dict(t) for t in d.get("fire_plan", [])]

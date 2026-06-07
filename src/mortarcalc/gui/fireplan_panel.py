@@ -13,9 +13,10 @@ from PySide6.QtWidgets import (
     QDateTimeEdit,
 )
 
-from ..ballistics import FireTable
+from ..ballistics import FireTableLibrary
 from ..battery import Peloton, PlannedTarget, KNOWN_SHELLS, shell_label, normalise_shell
 from ..geo import mgrs_to_utm
+from .mgrs_field import MgrsLineEdit
 from ..geo.current_location import get_current_position, LocationUnavailable
 from .coord_dialog import prompt_position
 from ..firemission import (
@@ -35,13 +36,13 @@ class FirePlanPanel(QWidget):
     def __init__(
         self,
         peloton: Peloton,
-        firetable: FireTable,
+        library: FireTableLibrary,
         engage_callback: Callable[[FireMission, list], None],
         archive_callback: Callable[[str], object] | None = None,
     ) -> None:
         super().__init__()
         self.peloton = peloton
-        self.firetable = firetable
+        self.library = library
         self.engage_callback = engage_callback
         self.archive_callback = archive_callback
 
@@ -120,7 +121,7 @@ class FirePlanPanel(QWidget):
 
         self.engage_group_combo = QComboBox()
         self.engage_fo_call = QLineEdit(); self.engage_fo_call.setPlaceholderText("FO call sign")
-        self.engage_fo_mgrs = QLineEdit(); self.engage_fo_mgrs.setPlaceholderText("FO MGRS")
+        self.engage_fo_mgrs = MgrsLineEdit(); self.engage_fo_mgrs.setPlaceholderText("FO MGRS")
         self.engage_fo_alt = QDoubleSpinBox(); self.engage_fo_alt.setRange(-500, 9000); self.engage_fo_alt.setSuffix(" m")
 
         engage_row = QHBoxLayout()
@@ -137,7 +138,7 @@ class FirePlanPanel(QWidget):
         box = QGroupBox("Add / edit target")
         form = QFormLayout(box)
         self.f_name = QLineEdit(); self.f_name.setPlaceholderText("bv. AB1001")
-        self.f_mgrs = QLineEdit(); self.f_mgrs.setPlaceholderText("MGRS"); self.f_mgrs.setMinimumWidth(200)
+        self.f_mgrs = MgrsLineEdit(); self.f_mgrs.setMinimumWidth(200)
         self.f_alt = QDoubleSpinBox(); self.f_alt.setRange(-500, 9000); self.f_alt.setSuffix(" m")
         b_loc = QPushButton("Current location"); b_loc.clicked.connect(self._fill_loc)
         mgrs_row = QHBoxLayout(); mgrs_row.addWidget(self.f_mgrs, 1); mgrs_row.addWidget(b_loc)
@@ -154,7 +155,7 @@ class FirePlanPanel(QWidget):
         self.f_fpf = QCheckBox("FPF (Final Protective Fire)")
 
         # voor LINEAR
-        self.f_line_az = QDoubleSpinBox(); self.f_line_az.setRange(0, 6399); self.f_line_az.setSuffix(" mils")
+        self.f_line_az = QDoubleSpinBox(); self.f_line_az.setRange(0, 6399); self.f_line_az.setDecimals(0); self.f_line_az.setSuffix(" mils")
         self.f_line_len = QDoubleSpinBox(); self.f_line_len.setRange(0, 5000); self.f_line_len.setValue(200); self.f_line_len.setSuffix(" m")
         # timings
         self.f_on_call = QCheckBox("On Call (no fixed timing)")
@@ -357,7 +358,7 @@ class FirePlanPanel(QWidget):
             line_length_m=t.line_length_m,
         )
         try:
-            sols = solve_mission(fm, self.peloton, self.firetable)
+            sols = solve_mission(fm, self.peloton, self.library.resolve(fm.shell))
         except Exception as e:
             QMessageBox.critical(self, "Computation failed", str(e)); return
         fm.note(f"Engaged from fire plan: {t.name}")
